@@ -1,0 +1,63 @@
+--- a/index.html
++++ b/index.html
+@@ -12,7 +12,7 @@
+ <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+ <meta name="apple-mobile-web-app-title" content="PPFD Meter">
+ <link rel="apple-touch-icon" href="apple-touch-icon.png">
+-<title>PPFD Meter Pro v3.4.1</title>
++<title>PPFD Meter Pro v3.4.2</title>
+ <style>
+   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
+   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@@ -94,7 +94,7 @@
+ </head>
+ <body>
+ <header>
+-  <span class="app-title">PPFD Meter Pro v3.4.1</span>
++  <span class="app-title">PPFD Meter Pro v3.4.2</span>
+   <div class="status-dot" id="statusDot"></div>
+ </header>
+ <main>
+@@ -193,7 +193,7 @@
+   </div>
+ 
+   <div class="calib-note">
+-    v3.4.1 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%) · Status-Checkliste<br>
++    v3.4.2 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%) · Status-Checkliste<br>
+     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
+     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
+     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
+@@ -690,10 +690,32 @@
+ const canvas=document.getElementById('processCanvas');
+ const ctx=canvas.getContext('2d',{willReadFrequently:true});
+ 
++// v3.4.2 FIX: showError() überschrieb den Toast-Text sofort bei
++// aufeinanderfolgenden Aufrufen im selben Tick (z.B. Clamp-Warnung direkt
++// gefolgt von "Punkt 1 gespeichert" in applyCalibration()) - die erste
++// Meldung wurde nie sichtbar gerendert, da kein Repaint dazwischenlag.
++// Jetzt: einfache Queue, jede Meldung bekommt ihre volle 4s-Anzeigezeit,
++// 300ms Pause dazwischen für die CSS-Transition (transform .3s).
++// Ergänzung: Dedupe gegen die zuletzt gezeigte/eingereihte Meldung, damit
++// sich bei wiederholtem Auslöser (z.B. Dauer-Clipping-Hinweis) kein
++// Rückstau identischer Toasts bildet.
++let toastQueue=[],toastActive=false,toastLast=null;
+ function showError(msg){
++  if(msg===toastLast) return;
++  toastLast=msg;
++  toastQueue.push(msg);
++  if(!toastActive) processToastQueue();
++}
++function processToastQueue(){
++  if(toastQueue.length===0){toastActive=false;toastLast=null;return;}
++  toastActive=true;
++  const msg=toastQueue.shift();
+   const t=document.getElementById('errorToast');
+   t.textContent=msg;t.classList.add('show');
+-  setTimeout(()=>t.classList.remove('show'),4000);
++  setTimeout(()=>{
++    t.classList.remove('show');
++    setTimeout(processToastQueue,300);
++  },4000);
+ }
+ function setButtonState(state){
+   const s=document.getElementById('startBtn'),p=document.getElementById('stopBtn');

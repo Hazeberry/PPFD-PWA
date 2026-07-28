@@ -1,0 +1,78 @@
+--- a/index.html
++++ b/index.html
+@@ -12,7 +12,7 @@
+ <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+ <meta name="apple-mobile-web-app-title" content="PPFD Meter">
+ <link rel="apple-touch-icon" href="apple-touch-icon.png">
+-<title>PPFD Meter Pro v3.4.0</title>
++<title>PPFD Meter Pro v3.4.1</title>
+ <style>
+   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
+   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@@ -94,7 +94,7 @@
+ </head>
+ <body>
+ <header>
+-  <span class="app-title">PPFD Meter Pro v3.4.0</span>
++  <span class="app-title">PPFD Meter Pro v3.4.1</span>
+   <div class="status-dot" id="statusDot"></div>
+ </header>
+ <main>
+@@ -193,7 +193,7 @@
+   </div>
+ 
+   <div class="calib-note">
+-    v3.4.0 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%) · Status-Checkliste<br>
++    v3.4.1 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%) · Status-Checkliste<br>
+     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
+     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
+     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
+@@ -516,19 +516,26 @@
+ // rawPPFD waere per Konstruktion ~0.
+ // Guards: Mindestabstand der Rohwerte (CALIB2_MIN_SEP), Steigung > 0;
+ // Verletzung => null (Aufrufer warnt und behaelt die alte Kalibrierung).
+-const CALIB2_MIN_SEP=5;
++// v3.4.1 FIX: Der Steigungs-Clamp (x0.1-x10) muss HIER passieren, nicht im
++// Aufrufer - der Offset wird aus derselben Steigung berechnet, sonst liefen
++// slope/offset nach einem Clamp auseinander. clamped-Flag: der Aufrufer kann
++// die Begrenzung sichtbar melden.
++const CALIB2_MIN_SEP=5,CALIB2_MIN_SLOPE=0.1,CALIB2_MAX_SLOPE=10;
+ function computeCalib2(p1,p2){
+   if(!p1&&!p2) return null;
+   if(p1&&!p2){
+     if(!(p1.raw>0)||!(p1.ref>0)) return null;
+-    return{slope:p1.ref/p1.raw,offset:0,points:1};
++    const raw1=p1.ref/p1.raw;
++    const s1=Math.max(CALIB2_MIN_SLOPE,Math.min(CALIB2_MAX_SLOPE,raw1));
++    return{slope:s1,offset:0,points:1,clamped:s1!==raw1};
+   }
+   if(!p1) return computeCalib2(p2,null);
+   const dRaw=p2.raw-p1.raw;
+   if(Math.abs(dRaw)<CALIB2_MIN_SEP) return null;
+-  const slope=(p2.ref-p1.ref)/dRaw;
+-  if(!(slope>0)) return null;
+-  return{slope:slope,offset:p1.ref-slope*p1.raw,points:2};
++  const rawSlope=(p2.ref-p1.ref)/dRaw;
++  if(!(rawSlope>0)) return null;
++  const slope=Math.max(CALIB2_MIN_SLOPE,Math.min(CALIB2_MAX_SLOPE,rawSlope));
++  return{slope:slope,offset:p1.ref-slope*p1.raw,points:2,clamped:slope!==rawSlope};
+ }
+ /* ===PURE-PIPELINE-END=== */
+ 
+@@ -1061,13 +1068,13 @@
+     showError('Kalibrierpunkte unbrauchbar: Rohwerte zu nah beieinander oder Steigung ≤ 0. Zweiten Punkt bei deutlich anderer Helligkeit messen (z.B. 100 und 1000 µmol).');
+     return; // bisherige Kalibrierung bleibt aktiv
+   }
+-  const rawSlope=c.slope;
+-  c.slope=Math.max(0.1,Math.min(10,c.slope));
++  // v3.4.1: Clamp liegt in computeCalib2 (Offset konsistent zur Steigung),
++  // hier nur noch persistieren und die Begrenzung sichtbar melden.
+   try{localStorage.setItem(CALIB2_KEY+'_'+cameraFacing,JSON.stringify(d));}catch(e){}
+   try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);}catch(e){} // Legacy-Faktor ersetzt
+   customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;
+   updateCalibDisplay();
+-  if(rawSlope!==c.slope){showError('Steigung ×'+rawSlope.toFixed(2)+' außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
++  if(c.clamped){showError('Steigung außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
+   if(c.points===1){
+     // Modal offen lassen: direkt zur zweiten Intensität übergehen möglich.
+     showError('Punkt 1 gespeichert (reine Steigung). Für Zwei-Punkt-Kalibrierung: bei deutlich anderer Helligkeit zweiten Referenzpunkt setzen.');
