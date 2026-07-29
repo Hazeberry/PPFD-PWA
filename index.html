@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.4</title>
+<title>PPFD Meter Pro v3.4.5</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.4</span>
+  <span class="app-title">PPFD Meter Pro v3.4.5</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,13 +193,14 @@
   </div>
 
   <div class="calib-note">
-    v3.4.4 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.5 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
     2-Punkt-Kalibrierung (Steigung+Offset) · PWA (installierbar, offline)<br>
     Median-Vorfilter (N=5) · Q-Gate · Erweiterte Unsicherheit k=2 (95 %) · Kalibrierung je Lichtprofil<br>
     Verify-Zeitbudget mit Kostenmodell · SW-Fallback nur für Navigationen · Canvas-Puffer aus PROC_W/PROC_H<br>
+    Flicker-Hysterese zählt Detektionen statt Frames<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -432,13 +433,30 @@ class AppStatusStateMachine {
     this.STATES={WARMUP:{id:'WARMUP',color:'var(--purple)',glow:'#c084fc',label:'SENS_WARMUP'},STABLE:{id:'STABLE',color:'var(--green)',glow:'#4ade80',label:'OPTIMAL'},FLICKER:{id:'FLICKER',color:'var(--amber)',glow:'#fbbf24',label:'FLICKER_WARN'},CLIPPING:{id:'CLIPPING',color:'var(--red)',glow:'#f87171',label:'OVEREXPOSED'},LOW_PERF:{id:'LOW_PERF',color:'var(--muted)',glow:'#6b8f6e',label:'CPU_LIMIT'}};
     this.current=this.STATES.WARMUP;
     this.acc={flicker:0,clipping:0,perf:0};
-    this.LIMITS={FLICKER_ENTER:20,FLICKER_EXIT:0,CLIP_ENTER:5,CLIP_EXIT:0,PERF_ENTER:45,PERF_EXIT:0};
+    // v3.4.5 FIX (Review): Die Flicker-Hysterese war wirkungslos. update()
+    // laeuft pro FRAME (60/s), die Flicker-Erkennung liefert aber nur einmal
+    // pro Sekunde ein neues Ergebnis - dasselbe isFlickering wurde also ~60x
+    // in den Akkumulator gezaehlt. FLICKER_ENTER:20 war damit nach einer
+    // Drittelsekunde erreicht: eine EINZIGE (womoeglich falsch positive)
+    // Detektion schaltete das Badge zuverlaessig ein, die Hysterese hat nie
+    // etwas abgefedert. Clipping und FPS sind dagegen echte Pro-Frame-Groessen,
+    // deren Schwellen stimmen weiterhin.
+    // Jetzt zaehlt der Flicker-Akkumulator in DETEKTIONEN, nicht in Frames
+    // (s. flickerFresh) - ENTER 3 heisst also ~3s durchgehender Befund.
+    this.LIMITS={FLICKER_ENTER:3,FLICKER_EXIT:0,CLIP_ENTER:5,CLIP_EXIT:0,PERF_ENTER:45,PERF_EXIT:0};
+    // Deckel je Signal: bei Flicker klein halten, sonst braucht das Loeschen
+    // nach langem Befund ebenso viele saubere Detektionen wie der Deckel hoch
+    // ist (bei 60 waeren das eine Minute Nachleuchten).
+    this.CAPS={flicker:6,clipping:60,perf:60};
   }
-  update(warmedUp,flickering,isClipping,fps){
+  // flickerFresh: nur true, wenn seit dem letzten Aufruf ein NEUES
+  // Detektionsergebnis vorliegt. Default true, damit direkte Aufrufe (Tests)
+  // sich wie eine Detektion pro Aufruf verhalten.
+  update(warmedUp,flickering,isClipping,fps,flickerFresh=true){
     if(!warmedUp){this.current=this.STATES.WARMUP;return this.current;}
-    this.acc.flicker=flickering?Math.min(60,this.acc.flicker+1):Math.max(0,this.acc.flicker-1);
-    this.acc.clipping=isClipping?Math.min(60,this.acc.clipping+1):Math.max(0,this.acc.clipping-1);
-    this.acc.perf=(fps<18)?Math.min(60,this.acc.perf+1):Math.max(0,this.acc.perf-1);
+    if(flickerFresh) this.acc.flicker=flickering?Math.min(this.CAPS.flicker,this.acc.flicker+1):Math.max(0,this.acc.flicker-1);
+    this.acc.clipping=isClipping?Math.min(this.CAPS.clipping,this.acc.clipping+1):Math.max(0,this.acc.clipping-1);
+    this.acc.perf=(fps<18)?Math.min(this.CAPS.perf,this.acc.perf+1):Math.max(0,this.acc.perf-1);
     switch(this.current.id){
       case 'WARMUP': this.current=this.STATES.STABLE;break;
       case 'STABLE':
@@ -748,6 +766,10 @@ let pixelStep=4,stepTransitionAccum=0;
 let flickerReliable=true,lowFpsFrameCount=0;
 const FPS_THRESHOLD_LOW=15,FPS_THRESHOLD_HIGH=20,FPS_CONFIRM_FRAMES=10;
 let lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
+// v3.4.5: Wird gesetzt, sobald der 1-Hz-Block ein NEUES Flicker-Ergebnis
+// erzeugt hat, und von der FSM-Aktualisierung wieder verbraucht. Ohne dieses
+// Signal zaehlte die FSM dasselbe Ergebnis ~60x (s. AppStatusStateMachine).
+let flickerResultFresh=false;
 let currentSignalLevel='ok';
 let lastUniformityCV=null;
 const temporalStats=new TemporalStats(30);
@@ -1475,6 +1497,7 @@ async function startCamera(){
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
     pixelStep=4;stepTransitionAccum=0;
     lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
+    flickerResultFresh=false;
     flickerReliable=true;lowFpsFrameCount=0;
     setButtonState('measuring');
     document.getElementById('statusDot').classList.add('active');
@@ -1785,6 +1808,11 @@ function processLoop(timestamp){
       if(lastFlickerResult.isFlickering){fe.style.display='block';fe.textContent=`⚠️ FLICKER: ${lastFlickerResult.modulation}% Modulation (${lastFlickerResult.freq})`;fv.textContent='WARNUNG';fv.style.color='var(--amber)';}
       else{fe.style.display='none';fv.textContent='Stabil';fv.style.color='var(--green)';}
     }
+    // v3.4.5: Jeder Zweig oben hat lastFlickerResult entschieden - auch die
+    // Pausen-Zweige ("CPU-Limit", "Zu dunkel", "Pausiert (8x)"), die bewusst
+    // auf false setzen. Alle sind ein gueltiges neues Ergebnis, der
+    // Akkumulator soll also in jedem Fall genau EINEN Schritt machen.
+    flickerResultFresh=true;
     lastAiUpdate=timestamp;
   }
 
@@ -1856,7 +1884,8 @@ function processLoop(timestamp){
   const qGateOpen=!lastQuality||lastQuality.q>=Q_GATE_HOLD;
   const holdKalman=isClipping||!qGateOpen;
   const displayPPFD=tempStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
-  const state=appFSM.update(tempStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps);
+  const state=appFSM.update(tempStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
+  flickerResultFresh=false; // verbraucht - bis zum naechsten 1-Hz-Block ruht der Flicker-Akkumulator
 
   document.getElementById('ppfdVal').textContent=tempStatus.isWarmedUp?(isClipping?'———':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD))):'–––';
   if(tempStatus.isWarmedUp&&!isClipping){
