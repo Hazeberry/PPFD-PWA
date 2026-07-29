@@ -21,7 +21,8 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_CLIP_FULL, Q_CLIP_ZERO, Q_UNI_FULL, Q_UNI_ZERO,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
-  U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE };`)();
+  U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -405,6 +406,92 @@ t('v3.4.1: Zwei-Punkt-Clamp - Offset konsistent zur GECLAMPPTEN Steigung', () =>
 t('v3.4.1: Ungeclamppte Fits tragen clamped=false', () => {
   assert.strictEqual(P.computeCalib2({ raw: 400, ref: 500 }, null).clamped, false);
   assert.strictEqual(P.computeCalib2({ raw: 100, ref: 90 }, { raw: 900, ref: 1010 }).clamped, false);
+});
+
+console.log('== Median-Vorfilter (v3.4.3) ==');
+t('Median glaettet nicht, solange die Reihe monoton ist', () => {
+  const rm = new P.RollingMedian(5);
+  // Vor dem Volllaufen: Median der bisherigen Werte, nie null nach dem 1. push
+  assert.strictEqual(rm.push(100), 100);
+  assert.strictEqual(rm.push(110), 105);
+  assert.strictEqual(rm.push(120), 110);
+});
+t('Einzelner Ausreisser wird vollstaendig verworfen', () => {
+  const rm = new P.RollingMedian(5);
+  [500, 505, 495, 500].forEach(v => rm.push(v));
+  const withSpike = rm.push(50000); // Reflex / Blitz
+  assert.strictEqual(withSpike, 500, 'Median bleibt beim Nutzsignal, Spike ohne Wirkung');
+});
+t('Auch ein Ausreisser nach unten (Wolkenschatten) greift nicht durch', () => {
+  const rm = new P.RollingMedian(5);
+  [800, 795, 805, 800].forEach(v => rm.push(v));
+  assert.strictEqual(rm.push(0), 800);
+});
+t('Zwei von fuenf Ausreissern sind noch abgedeckt, drei nicht mehr', () => {
+  const rm = new P.RollingMedian(5);
+  [400, 400, 400].forEach(v => rm.push(v));
+  rm.push(9999); rm.push(9999);
+  assert.strictEqual(rm.value(), 400, '2/5 Ausreisser: Median haelt');
+  rm.push(9999);
+  assert.notStrictEqual(rm.value(), 400, '3/5 Ausreisser: Median kippt (erwartet)');
+});
+t('Echter Pegelwechsel setzt sich nach der halben Fensterlaenge durch', () => {
+  const rm = new P.RollingMedian(5);
+  [100, 100, 100, 100, 100].forEach(v => rm.push(v));
+  rm.push(900); rm.push(900);
+  assert.strictEqual(rm.value(), 100, 'nach 2 neuen Werten noch alter Pegel');
+  assert.strictEqual(rm.push(900), 900, 'nach 3 von 5 kippt der Median auf den neuen Pegel');
+});
+t('Fenster laeuft nicht ueber und reset() leert es', () => {
+  const rm = new P.RollingMedian(5);
+  for (let i = 0; i < 50; i++) rm.push(i);
+  assert.strictEqual(rm.buf.length, 5);
+  assert.strictEqual(rm.value(), 47);
+  rm.reset();
+  assert.strictEqual(rm.value(), null, 'leeres Fenster -> null');
+});
+t('Nicht-endliche Werte werden ignoriert, nicht eingekippt', () => {
+  const rm = new P.RollingMedian(5);
+  [10, 20, 30].forEach(v => rm.push(v));
+  assert.strictEqual(rm.push(NaN), 20, 'NaN veraendert den Median nicht');
+  assert.strictEqual(rm.push(Infinity), 20);
+  assert.strictEqual(rm.buf.length, 3, 'Fenster bleibt unveraendert');
+});
+t('Gerades Fenster mittelt die beiden mittleren Werte', () => {
+  const rm = new P.RollingMedian(4);
+  [10, 20, 30, 40].forEach(v => rm.push(v));
+  assert.strictEqual(rm.value(), 25);
+});
+t('MEDIAN_WINDOW ist ungerade (Median ist ein echter Messwert)', () => {
+  assert.strictEqual(P.MEDIAN_WINDOW % 2, 1);
+});
+
+console.log('== Q-Gate (v3.4.3) ==');
+t('Q_GATE_HOLD liegt zwischen 0 und 1 und unter der 0.85-Anzeigeschwelle', () => {
+  assert.ok(P.Q_GATE_HOLD > 0 && P.Q_GATE_HOLD < 0.85, 'sonst friert die Live-Anzeige ein');
+});
+t('Sauberer Frame passiert das Gate, kollabierter nicht', () => {
+  const gut = P.computeQuality({ clipRatio: 0, uniformityCV: 0.02, yMeanLin: 0.2, temporalCV: 0.005 });
+  assert.ok(gut.q >= P.Q_GATE_HOLD, 'guter Frame darf nicht gehalten werden, q=' + gut.q.toFixed(3));
+  const schlecht = P.computeQuality({ clipRatio: 0.12, uniformityCV: 0.35, yMeanLin: 0.005, temporalCV: 0.22 });
+  assert.ok(schlecht.q < P.Q_GATE_HOLD, 'Schrottframe muss gehalten werden, q=' + schlecht.q.toFixed(3));
+});
+t('Brauchbare Freihand-Lage bliebe bei Gate=0.85 haengen, bei 0.35 nicht', () => {
+  // Das ist der Grund fuer 0.35 statt der 0.85 aus der Referenzarchitektur:
+  // leicht schraeg gehalten ist eine benutzbare Messlage, keine Schrottmessung.
+  const q = P.computeQuality({ clipRatio: 0.01, uniformityCV: 0.16, yMeanLin: 0.2, temporalCV: 0.06 });
+  assert.ok(q.q < 0.85, 'wuerde ein 0.85-Gate schliessen, q=' + q.q.toFixed(3));
+  assert.ok(q.q >= P.Q_GATE_HOLD, 'darf das 0.35-Gate nicht schliessen, q=' + q.q.toFixed(3));
+});
+t('Dokumentierte Einzelschwellen des Gates stimmen mit den Rampen ueberein', () => {
+  const nur = (o) => P.computeQuality(Object.assign(
+    { clipRatio: 0, uniformityCV: 0.02, yMeanLin: 0.2, temporalCV: 0.005 }, o)).q;
+  // Werte aus dem Kommentar an Q_GATE_HOLD - schlagen an, wenn jemand die
+  // Rampenkonstanten aendert, ohne die Begruendung nachzuziehen.
+  assert.ok(Math.abs(nur({ uniformityCV: 0.26 }) - P.Q_GATE_HOLD) < 0.02, 'CV 26% ~ Gate');
+  assert.ok(Math.abs(nur({ temporalCV: 0.158 }) - P.Q_GATE_HOLD) < 0.02, 'tCV 15.8% ~ Gate');
+  assert.ok(Math.abs(nur({ uniformityCV: 0.136 }) - 0.85) < 0.02, 'CV 13.6% ~ 0.85');
+  assert.ok(Math.abs(nur({ temporalCV: 0.076 }) - 0.85) < 0.02, 'tCV 7.6% ~ 0.85');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

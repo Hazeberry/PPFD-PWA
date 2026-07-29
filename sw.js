@@ -1,8 +1,8 @@
-// PPFD Meter Pro - Service Worker (v3.4.0)
+// PPFD Meter Pro - Service Worker
 // Cache-first für die eigene Origin: App läuft nach erstem Laden komplett
 // offline (Kamera/APIs brauchen ohnehin kein Netz). Versions-Cachename
 // erzwingt Update bei neuem Release (activate räumt alte Caches weg).
-const CACHE='ppfd-v3.4.2';
+const CACHE='ppfd-v3.4.4';
 const ASSETS=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png','./icon-512-maskable.png','./apple-touch-icon.png'];
 
 self.addEventListener('install',e=>{
@@ -28,7 +28,21 @@ self.addEventListener('fetch',e=>{
           caches.open(CACHE).then(c=>c.put(e.request,copy));
         }
         return resp;
-      }).catch(()=>caches.match('./index.html'));
+      }).catch(()=>offlineFallback(e.request));
     })
   );
 });
+
+// v3.4.4 FIX (Review): Der Offline-Fallback lieferte bisher fuer JEDE
+// fehlgeschlagene GET-Anfrage die index.html aus. Bei einem Bild bekam der
+// Browser damit ein HTML-Dokument mit Content-Type text/html als
+// Bild-Antwort - sichtbar nur als kaputtes Bild, aber sobald hier mal ein
+// fetch('irgendwas.json') dazukommt, ist es ein JSON.parse-Fehler, dessen
+// Ursache man lange sucht. Die App-Shell ist nur fuer NAVIGATIONEN die
+// richtige Antwort; alles andere bekommt einen ehrlichen Netzwerkfehler.
+function offlineFallback(request){
+  if(request.mode!=='navigate') return Response.error();
+  // Auch der Shell-Fallback kann fehlschlagen (Cache geleert, erster Start
+  // ohne Netz) - dann ist Response.error() korrekter als ein leeres 200.
+  return caches.match('./index.html').then(shell=>shell||Response.error());
+}

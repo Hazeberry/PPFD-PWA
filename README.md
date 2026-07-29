@@ -2,7 +2,7 @@
 
 **Smartphone-Kamera-basierte PPFD/PAR-Messung für Pflanzenbeleuchtung — als installierbare PWA, komplett offline-fähig, ohne App-Store.**
 
-Die App verwandelt die Handykamera in ein PPFD-Messgerät (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel exakt (sRGB-EOTF nach IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet physikalisch auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte Messunsicherheit (±%)** aus.
+Die App verwandelt die Handykamera in ein PPFD-Messgerät (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel exakt (sRGB-EOTF nach IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet physikalisch auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte erweiterte Messunsicherheit (± %, k = 2)** aus.
 
 ## Live
 
@@ -23,11 +23,11 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 ## Was drinsteckt
 
 - **Exakte sRGB-Linearisierung** (statt γ≈2.2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken
-- **Lichtquellen-Profile** (Sonnenlicht, weiße LED, LED Grow, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit, Auto-Erkennung oder manuelle Wahl (persistiert)
-- **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) — rein advisory, verändert keine Messwerte
-- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²), ehrlich: ±35 % unkalibriert vs. ±5 % kalibriert
+- **Lichtquellen-Profile** (Sonnenlicht, weiße LED, LED Grow, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit, Auto-Erkennung oder manuelle Wahl (persistiert). Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
+- **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV); unter Q < 0.35 wird der Kalman gehalten statt von Schrottframes weggezogen, der schwächste Teilfaktor wird als Grund angezeigt
+- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %), ehrlich: ca. ±70 % unkalibriert vs. ±10 % kalibriert. Der CSV-Export führt die Standardunsicherheit (k = 1) in der Spalte `uRel_k1`.
 - **Status-Checkliste** (✓/⚠ Übersteuerung, Gleichmäßigkeit, Signal, Stabilität) mit handlungsleitenden Hinweisen
-- **Robustheit:** adaptiver Kalman, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
+- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen Schrottframes, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
 - **PWA:** `manifest.json` + `sw.js` (cache-first, versionsierter Cache), Icons inkl. maskable
 
 ## Repo-Layout
@@ -36,16 +36,28 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **55 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **68 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_calib_storage.js` | Integrations-Harness, **12 Tests** für Kalibrier-Storage und Canvas-Verdrahtung |
+| `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
+| `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
 
 ## Tests
 
 ```bash
-node tests/test_pipeline.js   # 55/55 erwartet (kein Browser nötig)
+node tests/test_pipeline.js         # 68/68 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 12/12 erwartet
+node tests/test_exposure_budget.js  #  7/7  erwartet
+node tests/test_sw_fallback.js      #  8/8  erwartet
 ```
 
-Der Harness extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz.
+`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter und Q-Gate-Schwellen.
+
+`test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
+
+`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert.
+
+`test_sw_fallback.js` lädt `sw.js` in eine `ServiceWorkerGlobalScope`-Attrappe: die App-Shell darf nur bei Navigationen als Offline-Fallback kommen, ein fehlgeschlagenes Bild oder JSON bekommt einen echten Netzwerkfehler statt HTML.
 
 ## Entstehung & Credits
 
