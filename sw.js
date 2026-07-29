@@ -1,8 +1,8 @@
-// PPFD Meter Pro - Service Worker (v3.4.0)
+// PPFD Meter Pro - Service Worker
 // Cache-first für die eigene Origin: App läuft nach erstem Laden komplett
 // offline (Kamera/APIs brauchen ohnehin kein Netz). Versions-Cachename
 // erzwingt Update bei neuem Release (activate räumt alte Caches weg).
-const CACHE='ppfd-v3.4.2';
+const CACHE='ppfd-v3.4.3';
 const ASSETS=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png','./icon-512-maskable.png','./apple-touch-icon.png'];
 
 self.addEventListener('install',e=>{

@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.2</title>
+<title>PPFD Meter Pro v3.4.3</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.2</span>
+  <span class="app-title">PPFD Meter Pro v3.4.3</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,11 +193,12 @@
   </div>
 
   <div class="calib-note">
-    v3.4.2 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%) · Status-Checkliste<br>
+    v3.4.3 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
     2-Punkt-Kalibrierung (Steigung+Offset) · PWA (installierbar, offline)<br>
+    Median-Vorfilter (N=5) · Q-Gate · Erweiterte Unsicherheit k=2 (95 %) · Kalibrierung je Lichtprofil<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -244,6 +245,32 @@ function buildLinearLUT(){
 }
 const Y_R=0.2126,Y_G=0.7152,Y_B=0.0722;
 
+// v3.4.3 (Review/Paper-Abgleich): WICHTIG - 'factor' ist KEIN lux_to_ppfd-Faktor,
+// auch wenn die Zahlen so aussehen (SUNLIGHT 0.0185 ist exakt der Literaturwert
+// fuer Lux->PPFD bei D65, HPS 0.0122 und MH 0.0145 liegen in den ueblichen
+// Literaturbaendern). Die Referenzarchitektur schreibt die Kette
+//     Y_BT709 -> Lux (Geraetefaktor k) -> PPFD (x lux_to_ppfd)
+// vor. Diese App geht bewusst einen anderen Weg:
+//     linRGB -> parVal (PAR-Gewichte je Quellenklasse) -> PPFD (x factor)
+// Begruendung fuer die Abweichung: BT.709 gewichtet Gruen mit 0.7152 und
+// bildet damit V(lambda) nach - also die Empfindlichkeit des AUGES. Genau die
+// spektrale Information, die PPFD braucht (Photonen 400-700nm, naeherungsweise
+// flach), wird auf dem Umweg ueber Lux vorher zerstoert und muss danach per
+// Profilfaktor wieder herbeigeschaetzt werden. Die Kanaltrennung laenger zu
+// halten ist der physikalisch ehrlichere Pfad.
+//
+// KONSEQUENZ, die man kennen muss: 'factor' wirkt auf parVal, nicht auf Lux.
+// Bei neutralweissem Licht sind beide Groessen gleich (beide Gewichtssaetze
+// summieren zu ~1.0), bei spektral schiefen Quellen laufen sie auseinander:
+//     neutralweiss (R=G=B):        parVal / Y_BT709 = 1.00
+//     blurple LED (0.6/0.12/0.45): parVal / Y_BT709 = 1.93
+//     HPS (0.7/0.45/0.06):         parVal / Y_BT709 = 1.20
+// Die Faktoren hier sind daher NICHT gegen die Lux-Literatur pruefbar und
+// duerfen nicht daran "korrigiert" werden. Die absolute Skala kommt ohnehin
+// aus der Nutzer-Kalibrierung - die seit v3.4.3 pro Profil gespeichert wird,
+// weil genau dieser Versatz profilabhaengig ist (s. calibStorageKey()).
+// Eine echte Neubestimmung braucht Referenzmessungen je Quellenklasse gegen
+// ein PAR-Meter, nicht Literaturwerte aus der Lux-Welt.
 const LIGHT_PROFILES={
   SUNLIGHT:{r:0.33,g:0.34,factor:0.0185,u:0.05,name:'Sonnenlicht',note:'Tageslicht (D65), auch bewölkt. Faktor gut abgesichert.',detect:true},
   WHITE_LED:{factor:0.0185,u:0.08,name:'Weiße LED',note:'Weiße Vollspektrum-LEDs. CCT/CRI-abhängig – für kritische Messungen kalibrieren.',detect:false},
@@ -455,6 +482,25 @@ const Q_CLIP_FULL=0.01,Q_CLIP_ZERO=0.15;
 const Q_UNI_FULL=0.05,Q_UNI_ZERO=0.40;
 const Q_STAB_FULL=0.02,Q_STAB_ZERO=0.25;
 const SIGNAL_FULL_LIN=0.04;
+// v3.4.3: Q wurde bisher nur ANGEZEIGT und exportiert, nie als Filter benutzt -
+// schlechte Frames liefen ungefiltert in den Kalman. Unterhalb der Schwelle
+// wird der Kalman jetzt gehalten (kein update), wie es bei Clipping laengst
+// geschieht; der schwaechste Teilfaktor wird als Grund angezeigt.
+// Schwelle bewusst 0.35 und nicht die 0.85 der Referenzarchitektur: dort ist
+// 0.85 als "Beispielwert" fuer die Freigabe EINER abgeschlossenen Messung
+// genannt, nicht fuer eine 30fps-Live-Anzeige. Gegen die hiesigen Rampen
+// nachgerechnet, was die beiden Schwellen jeweils bedeuten:
+//   q=0.85 entspricht Uniformitaets-CV 13.6% ODER temporalCV 7.6% (je allein)
+//   q=0.35 entspricht Uniformitaets-CV 26%   ODER temporalCV 15.8%
+// Da q das PRODUKT der vier Teilfaktoren ist, trifft eine Kombination frueher:
+//   freihaendig, gute Lage   (CV 10%, tCV 4%, 0.5% clip) -> q=0.92
+//   freihaendig leicht schraeg(CV 16%, tCV 6%, 1% clip)  -> q=0.70
+//   schraeg+zittrig+Teilsaett.(CV 25%, tCV 12%, 4% clip) -> q=0.21
+// Bei 0.85 wuerde also schon "leicht schraeg gehalten" die Anzeige einfrieren -
+// eine voellig brauchbare Messlage, in der die App wie defekt wirken wuerde.
+// 0.35 trifft die Faelle, in denen mindestens ein Teilfaktor real kollabiert
+// ist. Die 0.85 bleiben als ANZEIGE-Schwelle (gruen/gelb/rot) erhalten.
+const Q_GATE_HOLD=0.35;
 
 class TemporalStats{
   constructor(n=30){this.n=n;this.buf=[];}
@@ -474,6 +520,37 @@ class TemporalStats{
     // ohnehin: bei m=30 Unterschied ~1.7% gegen u_cal (5-35%). Konsistent
     // mit dem Populations-CV der 3x3-Uniformität (N=9, s. analyzeFrame).
     return Math.sqrt(acc/m)/mean;
+  }
+  reset(){this.buf=[];}
+}
+
+// v3.4.3 (Review/Paper-Abgleich): Median-Vorfilter vor dem Kalman.
+// Der Kalman glaettet, ist aber NICHT ausreisserrobust - seine Verstaerkung
+// wird von der Innovation getrieben, ein einzelner extremer Frame verschiebt
+// x also sehr wohl (kurzer Wolkenschatten, Reflex, ein dunkles PWM-Frame).
+// Genau davor warnt die Referenzarchitektur und verlangt einen Median.
+// Umgesetzt als kurzer Vorfilter (N=5, ~170ms bei 30fps) statt als Ersatz:
+// - Median toetet Einzelausreisser per Konstruktion (bis zu 2 von 5),
+// - der Kalman bleibt fuer die eigentliche Glaettung zustaendig.
+// N bewusst klein: ein 10-20er Fenster (Papier-Vorschlag fuer EINE finale
+// Messung) wuerde die Live-Anzeige um ~0.5s traege machen. Ungerade Groesse,
+// damit der Median ein echter Messwert ist und nicht zwischen zwei mittelt.
+const MEDIAN_WINDOW=5;
+class RollingMedian{
+  constructor(n=MEDIAN_WINDOW){this.n=n;this.buf=[];}
+  push(v){
+    if(!Number.isFinite(v)) return this.value();
+    this.buf.push(v);
+    if(this.buf.length>this.n) this.buf.shift();
+    return this.value();
+  }
+  // Vor dem Volllaufen des Fensters wird der Median der bisherigen Werte
+  // zurueckgegeben - kein Warmlauf-Loch, der Aufrufer bekommt immer eine Zahl.
+  value(){
+    const m=this.buf.length;
+    if(m===0) return null;
+    const s=[...this.buf].sort((a,b)=>a-b);
+    return m%2===1?s[(m-1)/2]:(s[m/2-1]+s[m/2])/2;
   }
   reset(){this.buf=[];}
 }
@@ -612,14 +689,40 @@ const CALIB_KEY='ppfd_calibFactor_v2';
 // fungiert weiterhin als STEIGUNG, calibOffset als additiver Term.
 const CALIB2_KEY='ppfd_calib2_v1';
 let calibOffset=0,calibPoints=0;
-function loadCalib2Data(){try{return JSON.parse(localStorage.getItem(CALIB2_KEY+'_'+cameraFacing))||null;}catch(e){return null;}}
+// v3.4.3 (Review/Paper-Abgleich): Kalibrierung wird jetzt pro KAMERA UND
+// LICHTPROFIL gespeichert. Grund: der Profilfaktor wirkt auf parVal (nicht auf
+// Lux, s. LIGHT_PROFILES), und dieser Versatz ist profilabhaengig - bei
+// blurple LED knapp Faktor 2 gegenueber der Lux-Kette, bei HPS 1.2, bei
+// neutralweiss 1.0. Eine unter "LED Grow" gegen ein PAR-Meter erhobene
+// Kalibrierung war damit unter "Sonnenlicht" systematisch falsch, ohne dass
+// irgendetwas im UI darauf hinwies und ohne dass uProfile (5-10%) es abdeckt.
+// AUTO ist ein eigener Schluessel: dort wechselt das effektive Profil pro
+// Frame, eine Kalibrierung ist entsprechend schwaecher definiert.
+const LIGHTSRC_KEY='ppfd_lightsrc_v1';
+let manualLightKey=(()=>{try{const v=localStorage.getItem(LIGHTSRC_KEY);return v&&(v==='AUTO'||LIGHT_PROFILES[v])?v:'AUTO';}catch(e){return 'AUTO';}})();
+let calibLegacyScope=false; // true = aktive Kalibrierung stammt aus dem alten, profil-unabhaengigen Storage
+function calibStorageKey(){return CALIB2_KEY+'_'+cameraFacing+'_'+manualLightKey;}
+function calibLegacyKey(){return CALIB2_KEY+'_'+cameraFacing;}
+function readCalib2(key){try{return JSON.parse(localStorage.getItem(key))||null;}catch(e){return null;}}
+function loadCalib2Data(){return readCalib2(calibStorageKey());}
 function loadCalib(){
+  calibLegacyScope=false;
   const d=loadCalib2Data();
   if(d){
     const c=computeCalib2(d.p1||null,d.p2||null);
     if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;return;}
   }
+  // Legacy-Fallback: vor v3.4.3 gespeicherte Kalibrierung (nur pro Kamera).
+  // Sie wird weiter benutzt - Nutzerdaten werden nicht stillschweigend
+  // entwertet -, aber als profil-unabhaengig markiert, damit Anzeige und
+  // CSV-Export den schwaecheren Geltungsbereich sichtbar machen.
+  const legacy=readCalib2(calibLegacyKey());
+  if(legacy){
+    const c=computeCalib2(legacy.p1||null,legacy.p2||null);
+    if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=true;return;}
+  }
   customCalibFactor=loadCalibFactor();calibOffset=0;calibPoints=customCalibFactor!==null?1:0;
+  if(customCalibFactor!==null) calibLegacyScope=true;
 }
 function migrateCalibrationStorage(){
   let migrated=false;
@@ -646,6 +749,10 @@ let lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
 let currentSignalLevel='ok';
 let lastUniformityCV=null;
 const temporalStats=new TemporalStats(30);
+// v3.4.3: Ausreisser-Vorfilter fuer den PPFD-Strom (s. RollingMedian).
+// Bewusst getrennt von temporalStats - das haelt yMean_lin fuer den CV, hier
+// laufen kalibrierte PPFD-Werte durch.
+const ppfdMedian=new RollingMedian(MEDIAN_WINDOW);
 let lastQuality=null;
 let lastUncertainty=null;
 const Q_STATUS_LABELS={
@@ -654,6 +761,9 @@ const Q_STATUS_LABELS={
   signal:{ok:'✓ Signalstärke',warn:'⚠ Schwaches Signal – Messung rauschbehaftet'},
   stability:{ok:'✓ Stabilität',warn:'⚠ Instabil – Gerät und Quelle stillhalten'}
 };
+// v3.4.3: Kurzform desselben Befunds fuer die Zeile unter dem Messwert, wenn
+// das Q-Gate den Kalman anhaelt (computeQuality liefert 'weakest' bereits mit).
+const Q_WEAKEST_LABELS={clip:'Sättigung',uniformity:'Ausleuchtung',signal:'Signal',stability:'Stabilität'};
 function updateQualityStatus(q){
   const map=[['qsClip','clip',q.qClip],['qsUniformity','uniformity',q.qUniformity],['qsSignal','signal',q.qSignal],['qsStability','stability',q.qStability]];
   for(const[id,key,val]of map){
@@ -663,8 +773,6 @@ function updateQualityStatus(q){
     el.className='q-status-line '+(good?'ok':'warn');
   }
 }
-const LIGHTSRC_KEY='ppfd_lightsrc_v1';
-let manualLightKey=(()=>{try{const v=localStorage.getItem(LIGHTSRC_KEY);return v&&(v==='AUTO'||LIGHT_PROFILES[v])?v:'AUTO';}catch(e){return 'AUTO';}})();
 function initLightSourceSelect(){
   const sel=document.getElementById('lightSourceSelect');
   for(const[key,p]of Object.entries(LIGHT_PROFILES)){
@@ -1064,7 +1172,13 @@ function updateCalibDisplay(){
   const el=document.getElementById('activeCalibVal');
   if(customCalibFactor===null){el.textContent='– (unkalibriert)';return;}
   const off=calibOffset!==0?' '+(calibOffset>0?'+':'−')+Math.abs(calibOffset).toFixed(1):'';
-  el.textContent='×'+customCalibFactor.toFixed(4)+off+' ('+calibPoints+' Punkt'+(calibPoints>1?'e':'')+')';
+  // v3.4.3: Geltungsbereich sichtbar machen - eine Kalibrierung gilt nur fuer
+  // das Lichtprofil, unter dem sie erhoben wurde (s. calibStorageKey()).
+  const scope=calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel();
+  el.textContent='×'+customCalibFactor.toFixed(4)+off+' ('+calibPoints+' Punkt'+(calibPoints>1?'e':'')+')'+scope;
+}
+function calibScopeLabel(){
+  return manualLightKey==='AUTO'?'Auto-Erkennung':(LIGHT_PROFILES[manualLightKey]?.name ?? manualLightKey);
 }
 function openCalibModal(){
   document.getElementById('currentRawVal').textContent=currentRawPPFDUncalibrated<=0?'–––':(currentRawPPFDUncalibrated<10?currentRawPPFDUncalibrated.toFixed(1):Math.round(currentRawPPFDUncalibrated));
@@ -1092,9 +1206,14 @@ function applyCalibration(){
   }
   // v3.4.1: Clamp liegt in computeCalib2 (Offset konsistent zur Steigung),
   // hier nur noch persistieren und die Begrenzung sichtbar melden.
-  try{localStorage.setItem(CALIB2_KEY+'_'+cameraFacing,JSON.stringify(d));}catch(e){}
+  // v3.4.3: profilspezifisch schreiben. Der alte, profil-unabhaengige Eintrag
+  // wird dabei entfernt - sonst bliebe er als stiller Fallback fuer alle
+  // anderen Profile liegen und genau der Fehler, der hier behoben wird,
+  // bestuende fuer sie weiter.
+  try{localStorage.setItem(calibStorageKey(),JSON.stringify(d));}catch(e){}
+  try{localStorage.removeItem(calibLegacyKey());}catch(e){}
   try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);}catch(e){} // Legacy-Faktor ersetzt
-  customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;
+  customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;
   updateCalibDisplay();
   if(c.clamped){showError('Steigung außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
   if(c.points===1){
@@ -1106,8 +1225,15 @@ function applyCalibration(){
   }
 }
 function resetCalibration(){
-  customCalibFactor=null;calibOffset=0;calibPoints=0;
-  try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);localStorage.removeItem(CALIB2_KEY+'_'+cameraFacing);}catch(e){}
+  customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;
+  // v3.4.3: raeumt den profilspezifischen Eintrag, den Legacy-Eintrag und den
+  // ganz alten Steigungs-Faktor - "Zuruecksetzen" soll nicht einen von drei
+  // Storages stehen lassen, der beim naechsten Laden wieder auftaucht.
+  try{
+    localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);
+    localStorage.removeItem(calibStorageKey());
+    localStorage.removeItem(calibLegacyKey());
+  }catch(e){}
   updateCalibDisplay();
 }
 
@@ -1156,8 +1282,15 @@ function saveTrainPoint(){
 function exportTrainCSV(){
   const data=loadTrainData();
   if(data.length===0){showError('Keine Datenpunkte vorhanden.');return;}
-  const cols=['timestamp','geraet','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
-  const rows=[cols.join(',')];
+  const cols=['timestamp','geraet','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
+  // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
+  // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
+  // u-Werte kombinierte STANDARDunsicherheiten sind (k=1, ~68%), waehrend die
+  // App seit v3.4.3 k=2 anzeigt. Ohne diese Kennzeichnung kann ein gepoolter
+  // Datensatz nicht mehr richtig interpretiert werden.
+  const COL_HEADERS={uRel:'uRel_k1'};
+  const rows=[cols.map(c=>COL_HEADERS[c]??c).join(',')];
   const csvField=(v)=>{
     if(v===undefined||v===null) return '';
     if(typeof v==='number') return Number.isInteger(v)?String(v):v.toPrecision(8);
@@ -1302,7 +1435,7 @@ async function startCamera(){
     }
     kalman.r=hardwareSettings.constraintsApplied?2.5:8.0;
     kalman.x=0.0;kalman.p=1.0;kalman.lastMeasurement=0.0;kalman.lastInnovation=0;
-    tempCompensator.reset();gainController.reset();appFSM.reset();temporalStats.reset();
+    tempCompensator.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
     pixelStep=4;stepTransitionAccum=0;
     lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
@@ -1345,7 +1478,7 @@ function stopCamera(){
   ['hardwareRow','clippingRow','signalRow','uniformityRow','reliabilityRow','fpsRow','stepRow','debugExpRow'].forEach(id=>document.getElementById(id).style.display='none');
   document.getElementById('flickerWarning').style.display='none';
   document.getElementById('qualityStatus').style.display='none';
-  temporalStats.reset();lastQuality=null;
+  temporalStats.reset();ppfdMedian.reset();lastQuality=null;
   if(manualLightKey!=='AUTO'){
     document.getElementById('lightSourceVal').textContent=LIGHT_PROFILES[manualLightKey].name+' (manuell)';
     document.getElementById('spectralFactorVal').textContent='×'+LIGHT_PROFILES[manualLightKey].factor.toFixed(4);
@@ -1385,10 +1518,23 @@ document.getElementById('gainSlider').addEventListener('input',e=>{
 });
 
 document.getElementById('lightSourceSelect').addEventListener('change',e=>{
+  // v3.4.3: Die Kalibrierung haengt am Lichtprofil, also beim Wechsel neu
+  // laden. Vorher/nachher wird verglichen, damit der Nutzer den einzigen
+  // wirklich ueberraschenden Fall gemeldet bekommt: er war kalibriert und ist
+  // es fuer das neue Profil nicht mehr. Frueher lief in dem Fall die alte
+  // Kalibrierung stillschweigend weiter.
+  const hadCalib=customCalibFactor!==null;
   manualLightKey=e.target.value;
   try{localStorage.setItem(LIGHTSRC_KEY,manualLightKey);}catch(err){}
+  loadCalib();
+  updateCalibDisplay();
   updateLightSourceNote();
   lightDetector.unlock();
+  if(hadCalib&&customCalibFactor===null){
+    showError('Für „'+calibScopeLabel()+'" liegt keine Kalibrierung vor – Anzeige ist ab jetzt unkalibriert. Unter dieser Lichtquelle neu kalibrieren.');
+  }else if(customCalibFactor!==null&&calibLegacyScope){
+    showError('Aktive Kalibrierung stammt aus einer Version ohne Profilbindung und gilt streng genommen nur für die Lichtquelle, unter der sie erhoben wurde. Bei Gelegenheit neu kalibrieren.');
+  }
 });
 
 async function applyAntiClippingEV(){
@@ -1638,6 +1784,11 @@ function processLoop(timestamp){
     calibSteigung:customCalibFactor,
     calibOffset:calibOffset,
     calibPunkte:calibPoints,
+    // v3.4.3: Geltungsbereich der Kalibrierung mit exportieren. Ohne diese
+    // beiden Felder laesst sich in einem gepoolten Datensatz nicht mehr
+    // unterscheiden, ob ein Punkt unter dem passenden Profil kalibriert war.
+    calibProfil:customCalibFactor===null?null:manualLightKey,
+    calibGeltung:customCalibFactor===null?null:(calibLegacyScope?'profilunabhaengig':'profilspezifisch'),
     signalLevel:signalStatus.level,
     lichtquelleModus:manualLightKey!=='AUTO'?'manuell':'auto',
     profilFaktor:currentFactor,
@@ -1658,7 +1809,17 @@ function processLoop(timestamp){
     uNoise:lastUncertainty?.uNoise ?? null
   };
   const isClipping=(clipStatus.level==='critical');
-  const displayPPFD=tempStatus.isWarmedUp?(isClipping?kalman.x:kalman.update(rawPPFD)):0;
+  // v3.4.3: Median-Vorfilter + Q-Gate vor dem Kalman.
+  // Reihenfolge ist wichtig: erst Median (killt Einzelausreisser), dann Kalman
+  // (glaettet). Das Gate haelt den Kalman bei zusammengebrochener Messguete
+  // genauso an, wie es bei Clipping schon geschah - der zuletzt gute Wert
+  // bleibt stehen, statt von Schrottframes weggezogen zu werden.
+  // Der Median wird auch bei gehaltenem Kalman weiter gefuettert, damit das
+  // Fenster beim Zurueckkommen nicht mit veralteten Werten startet.
+  const medianPPFD=ppfdMedian.push(rawPPFD);
+  const qGateOpen=!lastQuality||lastQuality.q>=Q_GATE_HOLD;
+  const holdKalman=isClipping||!qGateOpen;
+  const displayPPFD=tempStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
   const state=appFSM.update(tempStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps);
 
   document.getElementById('ppfdVal').textContent=tempStatus.isWarmedUp?(isClipping?'———':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD))):'–––';
@@ -1666,7 +1827,16 @@ function processLoop(timestamp){
     const dli12=(displayPPFD*12*3600/1e6).toFixed(1);
     const dli18=(displayPPFD*18*3600/1e6).toFixed(1);
     document.getElementById('dliVal').textContent=`DLI 12h: ${dli12} · 18h: ${dli18} mol·m⁻²·d⁻¹`;
-    document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(lastUncertainty.uRel*100).toFixed(0)+' %'+(customCalibFactor===null?' · unkalibriert':'');
+    // v3.4.3 FIX: ERWEITERTE Unsicherheit (k=2, ~95%) anzeigen, nicht die
+    // kombinierte Standardunsicherheit (k=1, ~68%). uRel ist per GUM eine
+    // Standardunsicherheit; "±7 %" ohne Angabe des Erweiterungsfaktors liest
+    // aber praktisch jeder als 95%-Intervall - tatsaechlich lag damit jeder
+    // dritte Messwert ausserhalb. Der Faktor wird jetzt mit angezeigt.
+    // CSV behaelt bewusst k=1 (Rohgroesse), die Spalte heisst dafuer uRel_k1.
+    const uExp=lastUncertainty.uRel*2;
+    document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2, 95 %)'
+      +(customCalibFactor===null?' · unkalibriert':'')
+      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.weakest]);
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
     document.getElementById('uncertaintyVal').textContent='–';
