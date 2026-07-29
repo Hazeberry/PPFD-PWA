@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.3</title>
+<title>PPFD Meter Pro v3.4.4</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.3</span>
+  <span class="app-title">PPFD Meter Pro v3.4.4</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,17 +193,19 @@
   </div>
 
   <div class="calib-note">
-    v3.4.3 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.4 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
     2-Punkt-Kalibrierung (Steigung+Offset) · PWA (installierbar, offline)<br>
     Median-Vorfilter (N=5) · Q-Gate · Erweiterte Unsicherheit k=2 (95 %) · Kalibrierung je Lichtprofil<br>
+    Verify-Zeitbudget mit Kostenmodell · SW-Fallback nur für Navigationen · Canvas-Puffer aus PROC_W/PROC_H<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
 
 <video id="videoFeed" autoplay playsinline muted></video>
+<!-- width/height sind nur Startwerte; maßgeblich sind PROC_W/PROC_H im Skript, die sie beim Laden überschreiben. -->
 <canvas id="processCanvas" width="320" height="240"></canvas>
 <div class="blacklevel-overlay" id="blOverlay">
   <div class="bl-bar" id="blBar"></div>
@@ -791,11 +793,19 @@ function updateLightSourceNote(){
 const APERTURE_SQ=4.0,ISO=100,EXPOSURE_TIME=1/250;
 // v3.3.17 (Review/Tin): Verarbeitungsauflösung als benannte Konstanten -
 // die Literale 320/240 standen an ~6 Stellen (Canvas, drawImage,
-// getImageData, getUserMedia-Constraints, analyzeFrame-Aufruf). Das
-// HTML-Attribut am <canvas> (Zeile ~199) muss zu PROC_W/PROC_H passen.
+// getImageData, getUserMedia-Constraints, analyzeFrame-Aufruf).
+// v3.4.4 FIX (Review): Die siebte Stelle - das width/height-Attribut am
+// <canvas> - blieb ein Literal und war nur per Kommentar abgesichert, dessen
+// Zeilenverweis schon nicht mehr stimmte. Fehlermodus beim Aendern von
+// PROC_W: drawImage skaliert in einen 320er-Puffer, getImageData liest
+// darueber hinaus und bekommt fuer den Ueberhang transparente Nullen - alle
+// Mittelwerte fallen zu niedrig aus, ohne Absturz und ohne Test-Fail (der
+// Harness kennt nur den Pure-Block). Jetzt gewinnt der Code: die Attribute
+// im HTML sind nur noch ein Startwert und werden hier ueberschrieben.
 const PROC_W=320,PROC_H=240;
 const video=document.getElementById('videoFeed');
 const canvas=document.getElementById('processCanvas');
+canvas.width=PROC_W;canvas.height=PROC_H;
 const ctx=canvas.getContext('2d',{willReadFrequently:true});
 
 // v3.4.2 FIX: showError() überschrieb den Toast-Text sofort bei
@@ -862,11 +872,23 @@ function sampleFrameY(){
 // helle Phase ist der physikalisch korrekte Wert, dunkle Phasen sind
 // PWM-Artefakt. Nur für die Verify-/Band-Entscheidung, nicht für die
 // Rampen-Schleife (dort korrigiert sich ein dunkles Sample selbst nach).
+const PWM_SAMPLE_GAP_MS=120,PWM_SAMPLE_EXTRA=2;
 async function sampleFrameYPwm(){
   let m=sampleFrameY();
-  for(let k=0;k<2;k++){await new Promise(r=>setTimeout(r,120));m=Math.max(m,sampleFrameY());}
+  for(let k=0;k<PWM_SAMPLE_EXTRA;k++){await new Promise(r=>setTimeout(r,PWM_SAMPLE_GAP_MS));m=Math.max(m,sampleFrameY());}
   return m;
 }
+// v3.4.4: Kostenmodell des Verify-Blocks in tuneExposure, hier definiert weil
+// die Zahl von sampleFrameYPwm abhaengt - wer oben das Sampling aendert, sieht
+// hier direkt, dass das Budget mitwandern muss.
+// Der Block macht: applyConstraints + Settle + PWM-Sample + applyConstraints +
+// Settle + PWM-Sample. Settle ist 2x500ms, ein PWM-Sample kostet
+// PWM_SAMPLE_EXTRA * PWM_SAMPLE_GAP_MS. Dazu ein Zuschlag fuer die
+// applyConstraints-Latenz selbst, die auf langsamen ISPs zweistellig ms sein
+// kann. Bewusst grosszuegig gerundet: das Budget zu unterschaetzen kostet den
+// Watchdog, es zu ueberschaetzen kostet nur den Verify im Grenzfall.
+const VERIFY_SETTLE_MS=500;
+const VERIFY_COST_MS=2*VERIFY_SETTLE_MS+2*(PWM_SAMPLE_EXTRA*PWM_SAMPLE_GAP_MS)+120;
 
 const BLACKLEVEL_KEY='ppfd_blackLevel_v1';
 function loadBlackLevel(){
@@ -969,6 +991,14 @@ async function tuneExposure(track,cap,startReq){
   // dem Video-Ready-Timeout den 15s-Watchdog spurios auslösen. Nach Ablauf
   // des Budgets wird sauber mit dem bis dahin erreichten Stand ausgestiegen
   // (targetBandMet entscheidet dann wie gehabt über den Fallback).
+  // v3.4.4 FIX (Review): Das Budget wurde nur an den Schleifen-EINTRITTEN
+  // geprueft, nie innerhalb eines Blocks. Der Verify-Block ist aber nicht
+  // billig - 2x500ms Settle plus 2x sampleFrameYPwm (je ~240ms seit v3.3.15,
+  // das die Kosten erhoeht hat, ohne das Budget nachzuziehen) = ~1,5s. Wer
+  // bei 7999ms eintrat, lief bis ~9,5s und fraß damit genau die Reserve auf,
+  // die das Budget dem 15s-Watchdog verschaffen sollte (Video-Ready darf
+  // allein schon 3s kosten). Der Verify braucht sein Kostenmodell deshalb
+  // VORHER als Reserve, nicht nur ein "noch nicht abgelaufen".
   const deadline=performance.now()+8000;
   let req=startReq,trail=[startReq],y=0;
   const capMin=cap.exposureTime?.min??startReq,capMax=cap.exposureTime?.max??startReq;
@@ -1021,7 +1051,11 @@ async function tuneExposure(track,cap,startReq){
   // neben der Y-Änderung zählt auch eine beobachtete, richtungs-konsistente
   // Settings-Bewegung als Kausalitäts-Beleg (Suffix Y/S im Trail zeigt,
   // welcher Beleg griff).
-  if(trail.length===1 && y>=25 && y<=220 && performance.now()<deadline){
+  // v3.4.4: Eintritt nur, wenn der Block auch noch VOLLSTAENDIG ins Budget
+  // passt (s. VERIFY_COST_MS). Lieber kein Verify als ein Verify, das den
+  // Watchdog reisst - ohne Beleg greift die bisherige konservative Logik
+  // (kein '(verify' im Trail => targetBandMet entscheidet allein).
+  if(trail.length===1 && y>=25 && y<=220 && performance.now()<deadline-VERIFY_COST_MS){
     const liveNow=track.getSettings().exposureTime;
     const base=(Number.isFinite(liveNow)&&liveNow>0)?liveNow:req;
     let testReq=base*2;
@@ -1029,12 +1063,14 @@ async function tuneExposure(track,cap,startReq){
     if(cap.exposureTime?.min!==undefined&&testReq<cap.exposureTime.min) testReq=null;
     if(testReq!==null&&Math.abs(testReq-base)>2){
       try{
+        // v3.4.4: dieselbe Konstante, aus der VERIFY_COST_MS gerechnet wird -
+        // sonst laufen Kostenmodell und tatsaechliche Wartezeit auseinander.
         await track.applyConstraints({advanced:[{exposureTime:testReq}]});
-        await new Promise(r=>setTimeout(r,500));
+        await new Promise(r=>setTimeout(r,VERIFY_SETTLE_MS));
         const testY=await sampleFrameYPwm(); // v3.3.15: PWM-robust (s. Helper)
         const liveTest=track.getSettings().exposureTime;
         await track.applyConstraints({advanced:[{exposureTime:req}]});
-        await new Promise(r=>setTimeout(r,500));
+        await new Promise(r=>setTimeout(r,VERIFY_SETTLE_MS));
         y=await sampleFrameYPwm(); // v3.3.15: PWM-robust - ein dunkles PWM-Frame hier verwarf sonst den nachgewiesenen Lock
         const liveBack=track.getSettings().exposureTime;
         const yMoved=Math.abs(testY-y)>5;

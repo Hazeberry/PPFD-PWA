@@ -1,9 +1,9 @@
-// Integrations-Harness fuer den Kalibrier-Storage (v3.4.3).
+// Integrations-Harness fuer Modul-State und DOM-Verdrahtung (v3.4.3/v3.4.4).
 // Ergaenzt test_pipeline.js: das dortige Harness testet nur den
-// PURE-PIPELINE-Block, loadCalib()/resetCalibration() haengen aber an
-// localStorage und Modul-State. Hier wird das ECHTE <script> aus index.html in
-// eine minimale DOM-/Storage-Attrappe geladen und gegen die Profilbindung
-// geprueft - kein Browser noetig.
+// PURE-PIPELINE-Block, loadCalib()/resetCalibration() und die Canvas-
+// Verdrahtung haengen aber an localStorage bzw. am DOM. Hier wird das ECHTE
+// <script> aus index.html in eine minimale DOM-/Storage-Attrappe geladen -
+// kein Browser noetig.
 // Aufruf: node test_calib_storage.js [pfad/zu/index.html]
 'use strict';
 const fs=require('fs'),assert=require('assert');
@@ -15,7 +15,11 @@ const localStorage={getItem:k=>k in store?store[k]:null,setItem:(k,v)=>{store[k]
 const mkEl=()=>new Proxy({textContent:'',value:'',style:new Proxy({},{get:()=>'' ,set:()=>true}),className:'',
   classList:{add(){},remove(){},contains:()=>false},addEventListener(){},appendChild(){},querySelectorAll:()=>[]},
   {get(t,p){if(p in t)return t[p];return typeof p==='string'?function(){return mkEl();}:undefined;},set(t,p,v){t[p]=v;return true;}});
-const document={getElementById:()=>mkEl(),createElement:()=>mkEl(),addEventListener(){},body:mkEl(),
+// Elemente je id zwischenspeichern: das Skript setzt beim Laden Attribute
+// (z.B. canvas.width=PROC_W), die der Test danach auslesen koennen muss.
+const els=new Map();
+const document={getElementById:(id)=>{if(!els.has(id))els.set(id,mkEl());return els.get(id);},
+  createElement:()=>mkEl(),addEventListener(){},body:mkEl(),
   querySelectorAll:()=>[],visibilityState:'visible',hidden:false};
 const window={AudioContext:function(){},addEventListener(){}};
 const navigator={userAgent:'Node-Test',mediaDevices:{getUserMedia:async()=>{throw new Error('kein Video im Test');}}};
@@ -27,7 +31,8 @@ const api=new Function('localStorage','document','window','navigator','console',
     get calibPoints(){return calibPoints;},get calibLegacyScope(){return calibLegacyScope;},
     get manualLightKey(){return manualLightKey;}, set manualLightKey(v){manualLightKey=v;},
     get cameraFacing(){return cameraFacing;}, set cameraFacing(v){cameraFacing=v;},
-    calibStorageKey,calibLegacyKey,loadCalib,resetCalibration,computeCalib2,CALIB2_KEY};`
+    calibStorageKey,calibLegacyKey,loadCalib,resetCalibration,computeCalib2,CALIB2_KEY,
+    PROC_W,PROC_H};`
 )(localStorage,document,window,navigator,console,()=>0,{now:()=>Date.now()},()=>{},()=>true);
 
 let pass=0,fail=0;
@@ -112,6 +117,35 @@ t('Defekter JSON-Eintrag faellt sauber auf unkalibriert zurueck', ()=>{
   store['ppfd_calib2_v1_user_SUNLIGHT']='{kaputt';
   api.loadCalib();
   assert.strictEqual(api.customCalibFactor,null);
+});
+
+console.log('== Canvas-Verdrahtung (v3.4.4) ==');
+
+t('Canvas-Puffer wird aus PROC_W/PROC_H gesetzt, nicht aus dem HTML-Attribut', ()=>{
+  const c=els.get('processCanvas');
+  assert.ok(c,'processCanvas wurde nie angefordert');
+  assert.strictEqual(c.width,api.PROC_W,'canvas.width != PROC_W');
+  assert.strictEqual(c.height,api.PROC_H,'canvas.height != PROC_H');
+});
+
+t('PROC_W/PROC_H sind plausible, positive Ganzzahlen', ()=>{
+  for(const [n,v] of [['PROC_W',api.PROC_W],['PROC_H',api.PROC_H]]){
+    assert.ok(Number.isInteger(v)&&v>0,n+' ungueltig: '+v);
+  }
+});
+
+t('REGRESSION: im Skript stehen keine nackten 320/240-Literale mehr', ()=>{
+  // Der Fehlermodus war, dass eine Aenderung von PROC_W eine vergessene
+  // Fundstelle zurueckliesse - getImageData laese dann ueber den Puffer hinaus
+  // und alle Mittelwerte fielen zu niedrig aus, ohne Absturz und ohne Test-Fail.
+  const script=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const treffer=script.split('\n')
+    .map((z,i)=>[i+1,z])
+    .filter(([,z])=>!/^\s*\/\//.test(z))            // Kommentarzeilen
+    .filter(([,z])=>!/const\s+PROC_W\s*=/.test(z))   // die Definition selbst
+    .filter(([,z])=>/(^|[^\w.])(320|240)([^\w]|$)/.test(z.replace(/\/\/.*$/,'')));
+  assert.strictEqual(treffer.length,0,
+    'nackte Literale in Skriptzeile(n) '+treffer.map(([i])=>i).join(', '));
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');

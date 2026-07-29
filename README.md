@@ -37,19 +37,27 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
 | `tests/test_pipeline.js` | Node-Regressions-Harness, **68 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **9 Tests** für den Kalibrier-Storage (Profilbindung, Legacy-Fallback) |
+| `tests/test_calib_storage.js` | Integrations-Harness, **12 Tests** für Kalibrier-Storage und Canvas-Verdrahtung |
+| `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
+| `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
 
 ## Tests
 
 ```bash
-node tests/test_pipeline.js        # 68/68 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js   #   9/9 erwartet
+node tests/test_pipeline.js         # 68/68 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 12/12 erwartet
+node tests/test_exposure_budget.js  #  7/7  erwartet
+node tests/test_sw_fallback.js      #  8/8  erwartet
 ```
 
 `test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter und Q-Gate-Schwellen.
 
-`test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft den Kalibrier-Storage end-to-end — Profilbindung, Legacy-Fallback und dass `resetCalibration()` alle drei Storage-Generationen räumt.
+`test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
+
+`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert.
+
+`test_sw_fallback.js` lädt `sw.js` in eine `ServiceWorkerGlobalScope`-Attrappe: die App-Shell darf nur bei Navigationen als Offline-Fallback kommen, ein fehlgeschlagenes Bild oder JSON bekommt einen echten Netzwerkfehler statt HTML.
 
 ## Entstehung & Credits
 
