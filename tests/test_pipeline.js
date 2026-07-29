@@ -149,6 +149,78 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
 });
 
+console.log('== Flicker-Hysterese (v3.4.5) ==');
+// Die FSM wird pro Frame aufgerufen (~60/s), die Flicker-Erkennung liefert
+// aber nur 1x/s ein Ergebnis. Ohne flickerFresh zaehlte dasselbe Ergebnis 60x.
+const warm = (fsm) => { fsm.update(true, false, false, 30, true); return fsm; };
+// Ein Detektionsergebnis, ueber `frames` Frames an die FSM gereicht.
+function sekunde(fsm, flickering, frames = 60) {
+  let s;
+  for (let i = 0; i < frames; i++) s = fsm.update(true, flickering, false, 30, i === 0);
+  return s;
+}
+
+t('REGRESSION: eine einzelne Detektion trippt das Badge NICHT mehr', () => {
+  const fsm = warm(new P.AppStatusStateMachine());
+  const s = sekunde(fsm, true);
+  assert.strictEqual(s.id, 'STABLE', 'ein Befund darf keine Warnung ausloesen');
+  assert.strictEqual(fsm.acc.flicker, 1, 'Akkumulator darf nur 1 Schritt machen, war ' + fsm.acc.flicker);
+});
+
+t('Anhaltender Flicker loest nach FLICKER_ENTER Detektionen aus', () => {
+  const fsm = warm(new P.AppStatusStateMachine());
+  let s;
+  for (let i = 0; i < fsm.LIMITS.FLICKER_ENTER - 1; i++) s = sekunde(fsm, true);
+  assert.strictEqual(s.id, 'STABLE', 'zu frueh ausgeloest');
+  s = sekunde(fsm, true);
+  assert.strictEqual(s.id, 'FLICKER', 'nach ' + fsm.LIMITS.FLICKER_ENTER + ' Detektionen erwartet');
+});
+
+t('Warnung verschwindet wieder, wenn der Flicker aufhoert', () => {
+  const fsm = warm(new P.AppStatusStateMachine());
+  let s;
+  for (let i = 0; i < 5; i++) s = sekunde(fsm, true);
+  assert.strictEqual(s.id, 'FLICKER');
+  for (let i = 0; i < fsm.CAPS.flicker; i++) s = sekunde(fsm, false);
+  assert.strictEqual(s.id, 'STABLE', 'Badge blieb haengen, acc=' + fsm.acc.flicker);
+});
+
+t('Langer Flicker leuchtet nicht ewig nach (Deckel begrenzt das Loeschen)', () => {
+  const fsm = warm(new P.AppStatusStateMachine());
+  for (let i = 0; i < 300; i++) sekunde(fsm, true); // 5 Minuten Dauerbefund
+  assert.ok(fsm.acc.flicker <= fsm.CAPS.flicker,
+    'Akkumulator ueber dem Deckel: ' + fsm.acc.flicker);
+  let s;
+  for (let i = 0; i < fsm.CAPS.flicker; i++) s = sekunde(fsm, false);
+  assert.strictEqual(s.id, 'STABLE', 'nach ' + fsm.CAPS.flicker + ' sauberen Sekunden erwartet');
+});
+
+t('Pausierte Erkennung (Pixel-Step 8x) laesst die Warnung abklingen', () => {
+  // Die Pausen-Zweige setzen isFlickering=false und melden das als frisches
+  // Ergebnis - genau der Fall aus dem Feld-Screenshot.
+  const fsm = warm(new P.AppStatusStateMachine());
+  let s;
+  for (let i = 0; i < 5; i++) s = sekunde(fsm, true);
+  assert.strictEqual(s.id, 'FLICKER');
+  for (let i = 0; i < fsm.CAPS.flicker; i++) s = sekunde(fsm, false);
+  assert.strictEqual(s.id, 'STABLE');
+});
+
+t('Ohne frisches Ergebnis ruht der Akkumulator vollstaendig', () => {
+  const fsm = warm(new P.AppStatusStateMachine());
+  sekunde(fsm, true);
+  const vorher = fsm.acc.flicker;
+  for (let i = 0; i < 200; i++) fsm.update(true, true, false, 30, false);
+  assert.strictEqual(fsm.acc.flicker, vorher, 'abgelaufene Frames haben mitgezaehlt');
+});
+
+t('Clipping und FPS bleiben Pro-Frame-Groessen (Schwellen unveraendert)', () => {
+  const fsm = warm(new P.AppStatusStateMachine());
+  let s;
+  for (let i = 0; i < fsm.LIMITS.CLIP_ENTER; i++) s = fsm.update(true, false, true, 30, false);
+  assert.strictEqual(s.id, 'CLIPPING', 'Clipping muss ohne frisches Flicker-Ergebnis greifen');
+});
+
 console.log('== F: Profil-Bibliothek & Detektor ==');
 t('Profile: Faktoren/Unsicherheiten plausibel, detect-Flags korrekt', () => {
   for (const [k, p] of Object.entries(P.LIGHT_PROFILES)) {

@@ -148,5 +148,34 @@ t('REGRESSION: im Skript stehen keine nackten 320/240-Literale mehr', ()=>{
     'nackte Literale in Skriptzeile(n) '+treffer.map(([i])=>i).join(', '));
 });
 
+console.log('== Flicker-Verdrahtung (v3.4.5) ==');
+
+t('FSM-Aufruf reicht das Frisch-Signal durch', ()=>{
+  // AppStatusStateMachine.update() hat fuer flickerFresh den Default true -
+  // ein vergessenes Argument am Aufrufer wuerde den Bug also STILL
+  // wiederherstellen (dasselbe Ergebnis wieder ~60x gezaehlt). Deshalb hier
+  // ein Waechter auf die Aufrufstelle selbst.
+  const script=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const m=script.match(/appFSM\.update\(([^)]*)\)/);
+  assert.ok(m,'appFSM.update() nicht gefunden');
+  const args=m[1].split(',').map(a=>a.trim());
+  assert.strictEqual(args.length,5,'FSM-Aufruf hat '+args.length+' Argumente statt 5: '+m[1]);
+  assert.strictEqual(args[4],'flickerResultFresh','5. Argument ist nicht das Frisch-Signal: '+args[4]);
+});
+
+t('Frisch-Signal wird gesetzt und direkt danach verbraucht', ()=>{
+  const script=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const ohneKommentare=script.split('\n').filter(z=>!/^\s*\/\//.test(z)).join('\n');
+  assert.ok(/flickerResultFresh\s*=\s*true/.test(ohneKommentare),
+    'wird nie gesetzt - der Akkumulator stuende dann fuer immer still');
+  assert.ok(/flickerResultFresh\s*=\s*false/.test(ohneKommentare),
+    'wird nie zurueckgesetzt - dann zaehlte wieder jeder Frame');
+  // Das Zuruecksetzen muss NACH dem FSM-Aufruf stehen, sonst ist das Signal
+  // verbraucht, bevor es gewirkt hat.
+  const iCall=ohneKommentare.indexOf('appFSM.update(');
+  const iReset=ohneKommentare.indexOf('flickerResultFresh=false',iCall);
+  assert.ok(iCall>=0&&iReset>iCall,'Reset steht nicht nach dem FSM-Aufruf');
+});
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
