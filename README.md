@@ -30,6 +30,37 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 - **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen Schrottframes, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
 - **PWA:** `manifest.json` + `sw.js` (cache-first, versionsierter Cache), Icons inkl. maskable
 
+## Bekannte Grenzen
+
+Drei Punkte aus dem Code-Review, die bewusst offen sind — sie brauchen eine Produkt-/Anzeige-Entscheidung, keinen Bugfix. Wer die App ernsthaft benutzt, sollte sie kennen.
+
+### 1. Zwei-Punkt-Kalibrierung kann eine stille Null-Zone erzeugen
+
+Bei negativem Offset klemmt die Pipeline alles unterhalb von `|Offset| / Steigung` auf exakt **0**. Das passiert bei völlig plausiblen Kalibrierpunkten und schlägt kein Guard an:
+
+| Punkte | Fit | ab hier wird 0 gemeldet |
+|---|---|---|
+| 100 → 90 und 900 → 1010 | `×1.1500 −25.0` | raw < **21,7** |
+
+Im schwachen Licht (Zeltrand, Dämmerung) zeigt das Gerät dann hartnäckig 0 und wirkt defekt. Der Fit ist dort schlicht extrapoliert, und `u_cal` bildet das nicht ab.
+
+**Erkennen:** Die aktive Kalibrierung im Kalibrier-Dialog zeigt den Offset mit Vorzeichen. Steht dort ein Minus, teile den Betrag durch die Steigung — unterhalb dieses Werts ist die Anzeige nicht vertrauenswürdig.
+**Umgehen:** Für Messungen im unteren Bereich die Ein-Punkt-Kalibrierung benutzen — sie ist konstruktionsbedingt offsetfrei. Achtung, das erfordert **Zurücksetzen**: ein neuer Punkt landet sonst als zweiter Stützpunkt und der Offset ist wieder da (siehe Punkt 2).
+
+### 2. Der erste Kalibrierpunkt ist unlöschbar
+
+Nach dem ersten gespeicherten Punkt ersetzt jede weitere Kalibrierung nur noch `p2`. Ein veralteter `p1` — etwa aus einem anderen Diffusor-Aufbau — zieht die Gerade schief, während die Anzeige „(2 Punkte)" nach mehr Genauigkeit aussieht.
+
+**Umgehen:** Bei geändertem optischem Aufbau (Wechsel Papier ↔ Kosinus-Korrektor, andere Halterung) erst **Zurücksetzen**, dann neu kalibrieren. Ein bloßes Nachkalibrieren behält den alten ersten Punkt.
+
+### 3. Q kennt keinen Belichtungs-Faktor
+
+Der Qualitätsindex ist das Produkt aus Clipping, Homogenität, Signal und Stabilität. Ob die Belichtung ihr Zielband (Y 25–220) je erreicht hat, geht **nicht** ein — eine Sitzung dauerhaft außerhalb des Bands meldet weiterhin Q = 100 %.
+
+Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify…)` im Trail), läuft die Messung bewusst weiter, statt auf Auto-Belichtung zurückzufallen — dieses Verhalten ist gewollt. Q behauptet dann aber mehr Sicherheit, als der Belichtungszustand hergibt.
+
+**Erkennen:** Die Zeile *Debug: Exposure raw* zeigt bei manuellem Hardware-Modus `… Y=<Wert> …`. Liegt der weit außerhalb von 25–220, arbeitet der Sensor abseits seines Auslegungspunkts, unabhängig davon was Q sagt.
+
 ## Repo-Layout
 
 | Pfad | Inhalt |
