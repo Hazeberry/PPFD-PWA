@@ -25,14 +25,24 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 - **Exakte sRGB-Linearisierung** (statt γ≈2.2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken
 - **Lichtquellen-Profile** (Sonnenlicht, weiße LED, LED Grow, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit, Auto-Erkennung oder manuelle Wahl (persistiert). Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
 - **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV); unter Q < 0.35 wird der Kalman gehalten statt von Schrottframes weggezogen, der schwächste Teilfaktor wird als Grund angezeigt
-- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %), ehrlich: ca. ±70 % unkalibriert vs. ±10 % kalibriert. Der CSV-Export führt die Standardunsicherheit (k = 1) in der Spalte `uRel_k1`.
+- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %). Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
+
+  | Lage | angezeigt (k = 2) |
+  |---|---|
+  | unkalibriert + Auto-Erkennung (Auslieferungszustand) | ±73 % |
+  | unkalibriert, Profil manuell gewählt | ±71 % |
+  | kalibriert, LED Grow oder Auto-Erkennung | ±22 % |
+  | kalibriert, weiße LED manuell | ±19 % |
+  | kalibriert, Sonnenlicht/HPS manuell | **±14 %** ← Boden |
+
+  Der CSV-Export führt die Standardunsicherheit (k = 1) in der Spalte `uRel_k1`.
 - **Status-Checkliste** (✓/⚠ Übersteuerung, Gleichmäßigkeit, Signal, Stabilität) mit handlungsleitenden Hinweisen
 - **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen Schrottframes, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, gegen Canvas-Fehler abgesicherte Messschleife, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
 - **PWA:** `manifest.json` + `sw.js` (cache-first, versionsierter Cache), Icons inkl. maskable
 
 ## Bekannte Grenzen
 
-Drei Punkte aus dem Code-Review, die bewusst offen sind — sie brauchen eine Produkt-/Anzeige-Entscheidung, keinen Bugfix. Wer die App ernsthaft benutzt, sollte sie kennen.
+Vier Punkte aus dem Code-Review, die bewusst offen sind — sie brauchen eine Produkt-/Anzeige-Entscheidung, keinen Bugfix. Wer die App ernsthaft benutzt, sollte sie kennen.
 
 ### 1. Zwei-Punkt-Kalibrierung kann eine stille Null-Zone erzeugen
 
@@ -61,13 +71,30 @@ Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify
 
 **Erkennen:** Die Zeile *Debug: Exposure raw* zeigt bei manuellem Hardware-Modus `… Y=<Wert> …`. Liegt der weit außerhalb von 25–220, arbeitet der Sensor abseits seines Auslegungspunkts, unabhängig davon was Q sagt.
 
+### 4. Die angezeigte Unsicherheit hat einen Boden bei ±14 %
+
+Auch bei perfekter Messung — kalibriert, Profil manuell gewählt, Gerät auf dem Stativ, hell ausgeleuchtet — geht die angezeigte Unsicherheit nicht unter **±14 %**. Das ist kein Einzelfall, sondern ein rechnerischer Boden:
+
+```
+u_cal      = 0.05   (fix für „kalibriert")
+u_profile  = 0.05   (bestes Profil: Sonnenlicht oder HPS)
+u_sys      = √(0.05² + 0.05²) = 0.0707   ← die beiden sind gleich groß
+u_noise    = 0.01   (U_NOISE_FLOOR, signalunabhängig)
+u_rel      = √(0.0707² + 0.01²) = 0.0714
+angezeigt  = 0.0714 × 2 (k = 2) = 14,3 %
+```
+
+Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nur den Faktor √2 gegenüber der Profil-Unsicherheit — nicht mehr. Wer tiefer will, müsste das Spektrum der eigenen Lampe kennen und ein Profil mit belastbar kleinerem `u` hinterlegen; das ist eine Erweiterung der Profil-Bibliothek, keine Sache der Bedienung.
+
+**Praktisch heißt das:** Kalibrieren ist der mit Abstand größte Hebel (von ±73 % auf ±14–22 %). Danach bringt mehr Sorgfalt bei der Messung selbst kaum noch etwas an der *angezeigten* Zahl — die Reproduzierbarkeit verbessert sich, die ausgewiesene Unsicherheit aber nicht.
+
 ## Repo-Layout
 
 | Pfad | Inhalt |
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **81 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **85 Tests** gegen den extrahierten Pure-Pipeline-Block |
 | `tests/test_calib_storage.js` | Integrations-Harness, **20 Tests** für Kalibrier-Storage, Canvas-/Flicker-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
@@ -76,13 +103,13 @@ Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 81/81 erwartet (kein Browser nötig)
+node tests/test_pipeline.js         # 85/85 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 20/20 erwartet
 node tests/test_exposure_budget.js  #  7/7  erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 ```
 
-`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Schwellen, Flicker-Hysterese und Kalman-Reset beim Moduswechsel.
+`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Schwellen, Flicker-Hysterese, Kalman-Reset beim Moduswechsel und den Unsicherheits-Boden (inkl. Abgleich gegen die Zahlen in diesem README).
 
 `test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
 

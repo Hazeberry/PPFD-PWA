@@ -149,6 +149,60 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
 });
 
+console.log('== Unsicherheits-Boden & README-Konsistenz (v3.4.7) ==');
+
+// Der kleinste Wert, den die App ueberhaupt anzeigen kann: kalibriert, bestes
+// Profil, manuell gewaehlt, perfekt stabil, hell ausgeleuchtet.
+function unsicherheitsBodenProzentK2() {
+  const uProfileMin = Math.min(...Object.values(P.LIGHT_PROFILES).map(p => p.u));
+  const u = P.computeUncertainty({
+    calibrated: true, profileU: uProfileMin, autoMode: false,
+    temporalCV: 0, yMeanLin: 1.0
+  });
+  return u.uRel * 200; // x100 fuer Prozent, x2 fuer k=2
+}
+
+t('Der Boden liegt bei ~14 %, nicht bei 10 %', () => {
+  const boden = unsicherheitsBodenProzentK2();
+  assert.ok(Math.abs(boden - 14.3) < 0.2, 'Boden = ' + boden.toFixed(2) + ' %, erwartet ~14,3 %');
+  assert.ok(boden > 12, 'Ein Boden unter 12 % waere mit u_cal=u_profile=0.05 rechnerisch unmoeglich');
+});
+
+t('u_cal und u_profile sind gleich gross - Kalibrieren allein bringt nur Faktor sqrt(2)', () => {
+  // Genau das macht den Boden aus: waere u_profile vernachlaessigbar, laege er
+  // bei 2*0.05 = 10 % - die Zahl, die frueher im README stand.
+  const uProfileMin = Math.min(...Object.values(P.LIGHT_PROFILES).map(p => p.u));
+  assert.strictEqual(uProfileMin, P.U_CAL_CALIBRATED,
+    'Annahme gebrochen: bestes u_profile (' + uProfileMin + ') != u_cal (' + P.U_CAL_CALIBRATED + ')');
+  const nurCal = P.U_CAL_CALIBRATED * 200;
+  assert.ok(unsicherheitsBodenProzentK2() > nurCal * 1.3,
+    'Boden muss deutlich ueber der reinen u_cal-Verdopplung liegen');
+});
+
+t('Kein Messverhalten kann den Boden unterschreiten', () => {
+  const uProfileMin = Math.min(...Object.values(P.LIGHT_PROFILES).map(p => p.u));
+  const boden = unsicherheitsBodenProzentK2();
+  // Beliebig gute Stabilitaet und beliebig helles Signal helfen nicht weiter.
+  for (const yMean of [0.25, 0.5, 1.0, 10]) {
+    for (const tcv of [0, 0.001, 0.005]) {
+      const u = P.computeUncertainty({ calibrated: true, profileU: uProfileMin, autoMode: false, temporalCV: tcv, yMeanLin: yMean });
+      assert.ok(u.uRel * 200 >= boden - 1e-9,
+        `yMean=${yMean} tCV=${tcv} unterschreitet den Boden: ${(u.uRel * 200).toFixed(3)}`);
+    }
+  }
+});
+
+t('README nennt denselben Boden, den der Code rechnet', () => {
+  // Die alte Angabe "±10 % kalibriert" stammte aus der uCal-KONSTANTE, nicht
+  // aus dem Budget - unkalibriert faellt das nicht auf (uCal dominiert dort
+  // alles), kalibriert schon. Dieser Test bindet die Doku an die Rechnung.
+  const readme = fs.readFileSync(require('path').join(__dirname, '..', 'README.md'), 'utf8');
+  const boden = Math.round(unsicherheitsBodenProzentK2());
+  assert.ok(new RegExp('±' + boden + '\\s*%').test(readme),
+    'README nennt den berechneten Boden ±' + boden + ' % nicht');
+  assert.ok(!/±10\s*%\s*kalibriert/.test(readme), 'alte, zu optimistische Angabe wieder da');
+});
+
 console.log('== Kalman-Reset beim Moduswechsel (v3.4.6) ==');
 
 t('reset() loescht den Schaetzzustand vollstaendig', () => {
