@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.5</title>
+<title>PPFD Meter Pro v3.4.6</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.5</span>
+  <span class="app-title">PPFD Meter Pro v3.4.6</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,7 +193,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.5 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.6 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -201,6 +201,7 @@
     Median-Vorfilter (N=5) · Q-Gate · Erweiterte Unsicherheit k=2 (95 %) · Kalibrierung je Lichtprofil<br>
     Verify-Zeitbudget mit Kostenmodell · SW-Fallback nur für Navigationen · Canvas-Puffer aus PROC_W/PROC_H<br>
     Flicker-Hysterese zählt Detektionen statt Frames<br>
+    Vollständiger Zustands-Reset beim Moduswechsel · Messschleife gegen Canvas-Fehler abgesichert<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -351,6 +352,12 @@ class AdaptivePPFDKalmanFilter {
     return this.x;
   }
   get innovation(){return this.lastInnovation||0;}
+  // v3.4.6 FIX (Review/Sonnet): Schaetzzustand zuruecksetzbar machen.
+  // Bewusst NUR der Zustand (x, p, letzte Messung, letzte Innovation), nicht
+  // die Rauschparameter q/r: die setzt der Aufrufer je nach Betriebsart
+  // (r=2.5 bei Hardware-Lock, r=8.0 bei Software-Gain), ein reset() darf sie
+  // nicht stillschweigend auf die Konstruktor-Werte zuruecksetzen.
+  reset(x=0){this.p=1.0;this.x=x;this.lastMeasurement=x;this.lastInnovation=0;}
 }
 
 class LightSourceDetector {
@@ -701,6 +708,12 @@ let exposureDriftStrikes=0,lastExposureCheckFrame=0,exposureLockBaseline=null;
 let lastSwPollFrame=0;
 const EXPOSURE_CHECK_INTERVAL=60,EXPOSURE_DRIFT_THRESHOLD=0.15,EXPOSURE_DRIFT_STRIKES_LIMIT=3;
 let clipCriticalFrames=0,clipEvApplied=false,clipHintShown=false;
+// v3.4.6: Zaehler fuer AUFEINANDERFOLGENDE Fehlschlaege der Frame-Analyse.
+// 30 Frames sind bei 30-60fps rund eine halbe bis eine Sekunde - lang genug,
+// dass ein transient verlorener Canvas-Context sich erholen kann, kurz genug,
+// dass eine tote Schleife nicht minutenlang eine eingefrorene Zahl anzeigt.
+let canvasFailStreak=0;
+const CANVAS_FAIL_LIMIT=30;
 const CLIP_ESCALATE_FRAMES=90;
 const CALIB_KEY='ppfd_calibFactor_v2';
 // v3.4.0: Zwei-Punkt-Kalibrierung. Neuer Storage (JSON {p1,p2} pro Kamera);
@@ -1492,9 +1505,10 @@ async function startCamera(){
       document.getElementById('gainValue').textContent='1.00×';
     }
     kalman.r=hardwareSettings.constraintsApplied?2.5:8.0;
-    kalman.x=0.0;kalman.p=1.0;kalman.lastMeasurement=0.0;kalman.lastInnovation=0;
+    kalman.reset(); // v3.4.6: dieselbe Methode wie revertToAutoExposure() - beide Pfade duerfen nicht auseinanderlaufen
     tempCompensator.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
+    canvasFailStreak=0; // v3.4.6: sonst startet eine neue Sitzung mit dem Reststand der alten
     pixelStep=4;stepTransitionAccum=0;
     lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
     flickerResultFresh=false;
@@ -1625,6 +1639,30 @@ async function revertToAutoExposure(reason){
   document.getElementById('gainValue').textContent=gainController.gain.toFixed(2)+'×';
   document.getElementById('hardwareVal').textContent='Auto (Fallback: '+(reason||'auto-revert')+')';
   kalman.r=8.0;
+  // v3.4.6 FIX (Review/Sonnet): Beim Umschalten auf Software-Gain aendert sich
+  // die Messkette komplett - bisher wurde nur tempCompensator zurueckgesetzt,
+  // der Schaetzzustand blieb stehen. Zwei messbare Folgen:
+  //
+  // 1) Kalman: waehrend des Warmups wird update() gar nicht aufgerufen (die
+  //    Anzeige zeigt '–––'), das alte x ueberlebt also die vollen 300 Frames
+  //    unangetastet. Danach startet die Schaetzung beim ALTEN Wert. Simuliert
+  //    mit eingeschwungenem x=600 und neuem Ist-Wert 200: erster angezeigter
+  //    Wert 589 (194% daneben), 5% Restfehler erst nach 79 Frames (~2,6s bei
+  //    30fps) - r=8.0 macht die Annaeherung zusaetzlich traege.
+  // 2) temporalStats: der 30er-Ringpuffer haelt yMean_lin ueber den
+  //    Moduswechsel hinweg. Ein gemischter Puffer (25x dunkel/manuell, 5x hell/
+  //    auto) ergibt temporalCV = 1.16 - qStability faellt auf 0, damit Q = 0.
+  //    Seit dem Q-Gate (v3.4.3) haelt das den Kalman zusaetzlich an und meldet
+  //    "gehalten: Stabilitaet" fuer einen Uebergang, der keine Instabilitaet
+  //    ist; u_temporal wird gleichzeitig auf >100% aufgeblaeht.
+  //
+  // Der Startpfad in startCamera() macht genau diese Resets laengst - hier
+  // fehlten sie schlicht. ppfdMedian ebenso: sein Fenster haelt sonst fuenf
+  // Werte aus der alten Messkette.
+  kalman.reset();
+  temporalStats.reset();
+  ppfdMedian.reset();
+  lastQuality=null;lastUncertainty=null;
   tempCompensator.reset();
   wbManual=false;
   lightDetector.unlock();
@@ -1666,9 +1704,37 @@ function processLoop(timestamp){
 
   pixelStep=updatePixelStep(pixelStep,kalman.innovation);
 
-  ctx.drawImage(video,0,0,PROC_W,PROC_H);
-  const imageData=ctx.getImageData(0,0,PROC_W,PROC_H);
-  const frame=analyzeFrame(imageData.data,PROC_W,PROC_H,pixelStep,gammaLUT,blackLevelLin);
+  // v3.4.6 FIX (Review/Sonnet): Frame-Beschaffung abgesichert. drawImage,
+  // getImageData und analyzeFrame liefen ungeschuetzt - und
+  // requestAnimationFrame(processLoop) steht ganz am ENDE dieser Funktion.
+  // Eine Ausnahme hier (verlorener 2D-Context unter Speicherdruck, sehr
+  // seltene tainted-canvas-Faelle) beendete damit die Schleife endgueltig:
+  // isMeasuring blieb true, der Status-Punkt blieb "aktiv", die Anzeige stand
+  // auf dem letzten Wert - der Nutzer haette eine eingefrorene Messung fuer
+  // eine gueltige gehalten. Kein Fehler in der Konsole ausser der Exception
+  // selbst, keine Rueckmeldung im UI.
+  // Jetzt: einzelne Fehlschlaege werden uebersprungen (Context-Verlust ist
+  // oft transient und erholt sich), erst eine Serie beendet die Messung mit
+  // einer klaren Meldung. Der Zaehler laeuft nur ueber AUFEINANDERFOLGENDE
+  // Fehler, ein erholter Frame setzt ihn zurueck.
+  let frame;
+  try{
+    ctx.drawImage(video,0,0,PROC_W,PROC_H);
+    const imageData=ctx.getImageData(0,0,PROC_W,PROC_H);
+    frame=analyzeFrame(imageData.data,PROC_W,PROC_H,pixelStep,gammaLUT,blackLevelLin);
+    canvasFailStreak=0;
+  }catch(err){
+    canvasFailStreak++;
+    if(canvasFailStreak===1) console.warn('[PPFD] Frame-Analyse fehlgeschlagen:',err);
+    if(canvasFailStreak>=CANVAS_FAIL_LIMIT){
+      console.error('[PPFD] Frame-Analyse dauerhaft fehlgeschlagen, Messung gestoppt:',err);
+      stopCamera();
+      showError('Bildverarbeitung fehlgeschlagen ('+(err.name||'Fehler')+') – Messung gestoppt. Kamera neu starten; hilft das nicht, Tab/App neu laden.');
+      return;
+    }
+    animationFrameId=requestAnimationFrame(processLoop);
+    return;
+  }
   const avgR_lin=frame.avgR_lin,avgG_lin=frame.avgG_lin,avgB_lin=frame.avgB_lin;
   const yMean_lin=frame.yMean_lin;
   const avgR_gamma=frame.avgR_gamma,avgG_gamma=frame.avgG_gamma,avgB_gamma=frame.avgB_gamma;
