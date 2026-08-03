@@ -27,7 +27,7 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 - **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV); unter Q < 0.35 wird der Kalman gehalten statt von Schrottframes weggezogen, der schwächste Teilfaktor wird als Grund angezeigt
 - **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %), ehrlich: ca. ±70 % unkalibriert vs. ±10 % kalibriert. Der CSV-Export führt die Standardunsicherheit (k = 1) in der Spalte `uRel_k1`.
 - **Status-Checkliste** (✓/⚠ Übersteuerung, Gleichmäßigkeit, Signal, Stabilität) mit handlungsleitenden Hinweisen
-- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen Schrottframes, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
+- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen Schrottframes, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, gegen Canvas-Fehler abgesicherte Messschleife, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
 - **PWA:** `manifest.json` + `sw.js` (cache-first, versionsierter Cache), Icons inkl. maskable
 
 ## Bekannte Grenzen
@@ -67,8 +67,8 @@ Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **75 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **14 Tests** für Kalibrier-Storage, Canvas- und Flicker-Verdrahtung |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **81 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_calib_storage.js` | Integrations-Harness, **20 Tests** für Kalibrier-Storage, Canvas-/Flicker-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
@@ -76,13 +76,13 @@ Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 75/75 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 14/14 erwartet
+node tests/test_pipeline.js         # 81/81 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 20/20 erwartet
 node tests/test_exposure_budget.js  #  7/7  erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 ```
 
-`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Schwellen und Flicker-Hysterese.
+`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Schwellen, Flicker-Hysterese und Kalman-Reset beim Moduswechsel.
 
 `test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
 

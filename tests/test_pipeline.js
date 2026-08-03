@@ -22,7 +22,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, TemperatureCompensator };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -147,6 +147,89 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'LOW_PERF');
   for (let i = 0; i < 6; i++) s = fsm.update(true, false, true, 10);  // Clipping beginnt
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
+});
+
+console.log('== Kalman-Reset beim Moduswechsel (v3.4.6) ==');
+
+t('reset() loescht den Schaetzzustand vollstaendig', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 200; i++) k.update(600);
+  assert.ok(k.x > 500 && k.lastMeasurement === 600, 'Vorbedingung: eingeschwungen');
+  k.reset();
+  assert.strictEqual(k.x, 0);
+  assert.strictEqual(k.p, 1.0);
+  assert.strictEqual(k.lastMeasurement, 0);
+  assert.strictEqual(k.lastInnovation, 0);
+});
+
+t('reset() laesst q/r in Ruhe (Aufrufer setzt sie je Betriebsart)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  k.r = 8.0; k.q = 0.05;              // wie in revertToAutoExposure()
+  k.reset();
+  assert.strictEqual(k.r, 8.0, 'r wurde ueberschrieben - Software-Gain-Tuning verloren');
+  assert.strictEqual(k.q, 0.05, 'q wurde ueberschrieben');
+});
+
+t('REGRESSION: ohne reset() startet die Anzeige beim alten Wert', () => {
+  // Der Fall aus revertToAutoExposure(): eingeschwungen auf 600, danach
+  // liefert der Software-Gain-Pfad 200.
+  const alt = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 400; i++) alt.update(600);
+  alt.r = 8.0;
+  const ersterWertOhneReset = alt.update(200);
+  assert.ok(ersterWertOhneReset > 500,
+    'Erwartet: erster Wert klebt am alten Zustand, war ' + ersterWertOhneReset.toFixed(1));
+
+  const neu = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 400; i++) neu.update(600);
+  neu.r = 8.0; neu.reset();
+  const ersterWertMitReset = neu.update(200);
+  assert.ok(ersterWertMitReset < ersterWertOhneReset,
+    'reset() muss den Altwert loswerden');
+  assert.ok(Math.abs(ersterWertMitReset - 200) < Math.abs(ersterWertOhneReset - 200),
+    'mit reset() naeher am Ist-Wert');
+});
+
+t('Nach reset() konvergiert die Schaetzung schneller auf den neuen Pegel', () => {
+  const bis5 = (k, ziel) => { for (let i = 1; i <= 600; i++) { const v = k.update(ziel); if (Math.abs(v - ziel) / ziel < 0.05) return i; } return Infinity; };
+  const ohne = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 400; i++) ohne.update(600);
+  ohne.r = 8.0;
+  const mit = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 400; i++) mit.update(600);
+  mit.r = 8.0; mit.reset();
+  const nOhne = bis5(ohne, 200), nMit = bis5(mit, 200);
+  assert.ok(nMit < nOhne, `mit reset ${nMit} Frames, ohne ${nOhne} - kein Gewinn`);
+});
+
+t('REGRESSION: stehengebliebener temporalStats-Puffer kippt Q auf 0', () => {
+  // Beim Moduswechsel springt yMean_lin; ein gemischter Ringpuffer erzeugt
+  // einen temporalCV, der nichts mit echter Instabilitaet zu tun hat - und
+  // seit dem Q-Gate (v3.4.3) die Anzeige zusaetzlich anhaelt.
+  const ts = new P.TemporalStats(30);
+  for (let i = 0; i < 25; i++) ts.push(0.02);   // vor dem Revert: dunkel/manuell
+  for (let i = 0; i < 5; i++) ts.push(0.15);    // danach: Auto hellt auf
+  const cvGemischt = ts.cv();
+  assert.ok(cvGemischt > 0.5, 'gemischter Puffer sollte hohen CV zeigen, war ' + cvGemischt);
+  const qGemischt = P.computeQuality({ clipRatio: 0, uniformityCV: 0.03, yMeanLin: 0.15, temporalCV: cvGemischt });
+  assert.ok(qGemischt.q < P.Q_GATE_HOLD, 'Q-Gate wuerde halten, q=' + qGemischt.q.toFixed(3));
+  assert.strictEqual(qGemischt.weakest, 'stability');
+
+  ts.reset();                                    // das macht revertToAutoExposure() jetzt
+  for (let i = 0; i < 10; i++) ts.push(0.15);
+  const qSauber = P.computeQuality({ clipRatio: 0, uniformityCV: 0.03, yMeanLin: 0.15, temporalCV: ts.cv() });
+  assert.ok(qSauber.q >= P.Q_GATE_HOLD, 'nach reset muss das Gate wieder oeffnen, q=' + qSauber.q.toFixed(3));
+});
+
+t('Warmup laeuft nach dem Moduswechsel neu an (Kalman ruht so lange)', () => {
+  // Waehrend des Warmups ruft der Aufrufer update() gar nicht auf - genau
+  // deshalb ueberlebte das alte x bisher die vollen 300 Frames.
+  const tc = new P.TemperatureCompensator();
+  for (let i = 0; i < 400; i++) tc.update();
+  assert.strictEqual(tc.update().isWarmedUp, true);
+  tc.reset();
+  assert.strictEqual(tc.update().isWarmedUp, false, 'reset muss den Warmup neu starten');
+  assert.strictEqual(tc.warmupFrames, 300);
 });
 
 console.log('== Flicker-Hysterese (v3.4.5) ==');

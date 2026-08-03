@@ -177,5 +177,83 @@ t('Frisch-Signal wird gesetzt und direkt danach verbraucht', ()=>{
   assert.ok(iCall>=0&&iReset>iCall,'Reset steht nicht nach dem FSM-Aufruf');
 });
 
+console.log('== Zustands-Reset & Schleifen-Robustheit (v3.4.6) ==');
+
+// Beide Befunde liegen ausserhalb des PURE-PIPELINE-Blocks (revertToAutoExposure
+// und processLoop haengen an DOM und Modul-State). test_pipeline.js prueft, DASS
+// kalman.reset()/temporalStats.reset() das Richtige tun - hier wird geprueft,
+// dass die Aufrufer sie auch benutzen.
+const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+const koerper=(name)=>{
+  const start=skript.indexOf('function '+name+'(');
+  assert.ok(start>=0,name+'() nicht gefunden');
+  let i=skript.indexOf('{',start),tiefe=0;
+  for(let j=i;j<skript.length;j++){
+    if(skript[j]==='{')tiefe++;
+    else if(skript[j]==='}'){tiefe--;if(tiefe===0)return skript.slice(i,j+1);}
+  }
+  throw new Error(name+'(): Funktionsende nicht gefunden');
+};
+
+t('revertToAutoExposure() setzt den kompletten Schaetzzustand zurueck', ()=>{
+  const b=koerper('revertToAutoExposure');
+  for(const [was,muster] of [
+    ['Kalman',        /kalman\.reset\(\)/],
+    ['temporalStats', /temporalStats\.reset\(\)/],
+    ['ppfdMedian',    /ppfdMedian\.reset\(\)/],
+    ['tempCompensator',/tempCompensator\.reset\(\)/],
+  ]) assert.ok(muster.test(b), was+'-Reset fehlt - Anzeige driftet mit altem Zustand nach');
+});
+
+t('Software-Gain-Tuning r=8.0 bleibt gesetzt, reset() fasst es nicht an', ()=>{
+  const b=koerper('revertToAutoExposure');
+  assert.ok(/kalman\.r\s*=\s*8\.0/.test(b),'Software-Gain-Tuning r=8.0 fehlt');
+  // reset() fasst q/r nicht an, die Reihenfolge ist damit unkritisch -
+  // dieser Test haelt fest, dass die Annahme weiter gilt.
+  assert.ok(!/reset\([^)]*r/.test(b),'reset() bekommt Rauschparameter uebergeben?');
+});
+
+t('Startpfad und Revert-Pfad benutzen dieselbe Reset-Methode', ()=>{
+  // Frueher stand im Startpfad eine handgeschriebene Feldliste
+  // (kalman.x=0.0;kalman.p=1.0;...). Zwei Kopien derselben Logik driften.
+  assert.ok(!/kalman\.x\s*=\s*0\.0\s*;\s*kalman\.p\s*=/.test(skript),
+    'handgeschriebener Kalman-Reset wieder da - bitte kalman.reset() benutzen');
+  const treffer=skript.match(/kalman\.reset\(\)/g)||[];
+  assert.ok(treffer.length>=2,'kalman.reset() nur '+treffer.length+'x - ein Pfad fehlt');
+});
+
+t('processLoop() faengt Fehler der Frame-Beschaffung ab', ()=>{
+  const b=koerper('processLoop');
+  const i=b.indexOf('ctx.drawImage(video,0,0,PROC_W,PROC_H)');
+  assert.ok(i>=0,'drawImage-Aufruf nicht gefunden');
+  const davor=b.slice(0,i);
+  const letztesTry=davor.lastIndexOf('try{');
+  const letztesCatch=davor.lastIndexOf('catch');
+  assert.ok(letztesTry>letztesCatch,
+    'drawImage/getImageData/analyzeFrame stehen ausserhalb eines try - die Schleife stirbt bei Canvas-Fehlern lautlos');
+  assert.ok(/getImageData/.test(b.slice(i,i+400)),'getImageData nicht im selben Block');
+});
+
+t('Der Fehlerpfad gibt Rueckmeldung und haelt die Schleife am Leben', ()=>{
+  const b=koerper('processLoop');
+  assert.ok(/canvasFailStreak\+\+/.test(b),'kein Zaehler fuer aufeinanderfolgende Fehler');
+  assert.ok(/canvasFailStreak=0/.test(b),'Zaehler wird bei Erfolg nicht zurueckgesetzt');
+  assert.ok(/CANVAS_FAIL_LIMIT/.test(b),'keine Obergrenze - eine tote Schleife liefe ewig weiter');
+  assert.ok(/showError\(/.test(b),'keine Nutzer-Rueckmeldung im Fehlerpfad');
+  assert.ok(/stopCamera\(\)/.test(b),'Messung wird bei Dauerfehler nicht gestoppt');
+  // Nach einem einzelnen Fehlschlag muss der naechste Frame angefordert werden.
+  const cIdx=b.indexOf('catch(err)');
+  assert.ok(cIdx>=0,'catch(err) nicht gefunden');
+  const block=b.slice(cIdx,cIdx+1200);
+  assert.ok(/requestAnimationFrame\(processLoop\)/.test(block),
+    'catch-Block fordert keinen naechsten Frame an - transiente Fehler wuerden die Messung beenden');
+});
+
+t('canvasFailStreak wird beim Kamerastart zurueckgesetzt', ()=>{
+  assert.ok(/canvasFailStreak=0;\s*\/\/ v3\.4\.6/.test(skript)||
+            (skript.match(/canvasFailStreak=0/g)||[]).length>=2,
+    'Reststand der vorigen Sitzung wuerde mitgeschleppt');
+});
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
