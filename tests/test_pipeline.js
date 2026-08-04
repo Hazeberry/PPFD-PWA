@@ -22,7 +22,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, TemperatureCompensator };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, TemperatureCompensator };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -182,11 +182,55 @@ t('Unrepraesentative Frames werden weiterhin gehalten', () => {
   assert.strictEqual(uebersteuert.gateWeakest, 'clip');
 });
 
-t('qGate haengt nachweislich NICHT von Signal und Stabilitaet ab', () => {
+t('REGRESSION v3.4.8: Restband knapp ueber SIGNAL_CRIT_LIN haelt nicht an', () => {
+  // Der v3.4.7-Test oben setzt uniformityCV von Hand auf null und trifft damit
+  // nur das Regime UNTERHALB SIGNAL_CRIT_LIN (0.003), wo analyzeFrame() cv
+  // ohnehin auf null setzt. Knapp darueber liefert analyzeFrame() eine grosse
+  // endliche Zahl: cv = std/zMean, bei zMean=0.0035 und einem Zonen-std von
+  // 0.0015 (Vignettierung + Schwarzwert-Rest, mitteln sich nicht weg) sind das
+  // 0.43 -> qUniformity = 0 -> Gate zu. Exakt der Feldfall aus v3.4.7, nur
+  // ueber die Uniformitaets- statt der Signal-Achse.
+  const zMean = 0.0035, zoneStd = 0.0015;
+  assert.ok(zMean > P.SIGNAL_CRIT_LIN, 'Testaufbau: cv ist hier NICHT null');
+  const cv = zoneStd / zMean;
+  assert.ok(cv > P.Q_UNI_ZERO, 'Testaufbau: cv muss qUniformity auf 0 druecken, cv=' + cv.toFixed(3));
+
+  const band = qq({ yMeanLin: zMean, uniformityCV: cv, temporalCV: 0.3 });
+  assert.strictEqual(band.qUniformity, 0, 'qUniformity soll in der ANZEIGE weiterhin 0 sein');
+  assert.ok(band.qGate >= P.Q_GATE_HOLD,
+    'Gate muss offen bleiben, qGate=' + band.qGate.toFixed(3));
+  assert.strictEqual(band.gateWeakest, 'clip', 'gehaltene Achse darf nicht Ausleuchtung sein');
+});
+
+t('v3.4.8: die Uniformitaets-Achse gatet oberhalb der Schwelle weiterhin', () => {
+  // Gegenprobe zum Test darueber - der Fix darf die Achse nicht generell
+  // abschalten, sonst faellt der Schutz vor schraeg gehaltenen Frames weg.
+  const hell = qq({ yMeanLin: P.Q_UNI_GATE_MIN_LIN, uniformityCV: 0.30 });
+  assert.ok(hell.qGate < P.Q_GATE_HOLD, 'CV 30% bei ausreichendem Signal muss halten');
+  assert.strictEqual(hell.gateWeakest, 'uniformity');
+
+  // Direkt unterhalb der Schwelle kippt dasselbe Frame auf "offen".
+  const knappDrunter = qq({ yMeanLin: P.Q_UNI_GATE_MIN_LIN * 0.99, uniformityCV: 0.30 });
+  assert.ok(knappDrunter.qGate >= P.Q_GATE_HOLD, 'unterhalb der Schwelle darf cv nicht gaten');
+});
+
+t('qGate haengt nicht vom Signal als MESSWERT ab (nur cv-Eignung, fail-open)', () => {
+  // v3.4.8 praezisiert den Vertrag von v3.4.7: der Signalpegel darf das Gate
+  // niemals SCHLIESSEN - er darf die Uniformitaets-Achse nur deaktivieren,
+  // wenn cv dort unbeurteilbar wird. Beide Richtungen werden geprueft.
   const basis = qq({}).qGate;
   assert.ok(Number.isFinite(basis), 'qGate existiert nicht (Wert: ' + basis + ')');
   for (const y of [0.0001, 0.001, 0.01, 0.5, 5]) {
-    assert.strictEqual(qq({ yMeanLin: y }).qGate, basis, 'yMeanLin=' + y + ' hat qGate veraendert');
+    assert.strictEqual(qq({ yMeanLin: y }).qGate, basis,
+      'yMeanLin=' + y + ' hat qGate veraendert (cv unauffaellig, darf nichts aendern)');
+  }
+  // Fail-open: bei auffaelligem cv darf weniger Signal das Gate nur OEFFNEN.
+  let vorher = 1;
+  for (const y of [0.5, 0.05, P.Q_UNI_GATE_MIN_LIN, 0.01, 0.004]) {
+    const g = qq({ yMeanLin: y, uniformityCV: 0.30 }).qGate;
+    assert.ok(g >= vorher || y >= P.Q_UNI_GATE_MIN_LIN,
+      'weniger Signal hat das Gate weiter geschlossen (yMeanLin=' + y + ')');
+    vorher = g;
   }
   for (const tcv of [0, 0.05, 0.3, 2.0, null]) {
     assert.strictEqual(qq({ temporalCV: tcv }).qGate, basis, 'temporalCV=' + tcv + ' hat qGate veraendert');
