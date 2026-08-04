@@ -204,6 +204,7 @@
     Vollständiger Zustands-Reset beim Moduswechsel · Messschleife gegen Canvas-Fehler abgesichert<br>
     Q-Gate nur auf Frame-Repräsentativität (dunkle Szenen frieren die Anzeige nicht mehr ein)<br>
     Uniformitäts-Achse gatet erst ab ausreichendem Signal · Session-ID im Trainingsdaten-Export<br>
+    Zurücksetzen räumt alle Lichtprofile der Kamera (Aufbau-Wechsel)<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -1371,17 +1372,45 @@ function applyCalibration(){
     if(Math.abs(c.offset)>0.25*Math.max(d.p1.ref,d.p2.ref)) showError('Hinweis: ungewöhnlich großer Offset ('+(c.offset>0?'+':'')+c.offset.toFixed(1)+') – Kalibrierpunkte plausibel?');
   }
 }
+// Alle Storage-Schluessel, unter denen eine Kalibrierung fuer EINE Kamera
+// liegen kann: der ganz alte reine Steigungsfaktor, der profil-unabhaengige
+// Eintrag bis v3.4.2 und je ein Eintrag pro Lichtprofil ab v3.4.3.
+function calibKeysFor(facing){
+  return [CALIB_KEY+'_'+facing, CALIB2_KEY+'_'+facing,
+    ...['AUTO',...Object.keys(LIGHT_PROFILES)].map(k=>CALIB2_KEY+'_'+facing+'_'+k)];
+}
+function countCalibKeys(facing){
+  let n=0;
+  for(const k of calibKeysFor(facing)){try{if(localStorage.getItem(k)!==null) n++;}catch(e){}}
+  return n;
+}
+// v3.4.8 FIX: raeumt ALLE Lichtprofile dieser Kamera, nicht nur das aktive.
+// Das README schreibt "Zuruecksetzen" als Prozedur fuer einen geaenderten
+// optischen Aufbau vor (Wechsel Papier <-> Kosinus-Korrektor, andere
+// Halterung - "Bekannte Grenzen", Punkt 2). So ein Wechsel entwertet die
+// Kalibrierung ALLER Profile gleichermassen: der Diffusor sitzt vor dem
+// Sensor, nicht vor einem Lichtprofil.
+// Bis v3.4.7 raeumte die Funktion nur das gerade gewaehlte Profil. Wer der
+// Anleitung folgte, hatte danach unter den uebrigen Profilen still die
+// Kalibrierung des ALTEN Aufbaus stehen und bekam beim naechsten
+// Profilwechsel leise falsche Werte - unbemerkt, weil der Wechsel-Handler
+// nur den Uebergang kalibriert -> unkalibriert meldet, nicht den umgekehrten.
+// Die andere Kamera wird NICHT mitgeraeumt (eigener Sensor, eigene
+// Kalibrierung), aber gemeldet, wenn dort noch etwas liegt - ein
+// Aufbau-Wechsel betrifft sie oft ebenso.
 function resetCalibration(){
   customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;
-  // v3.4.3: raeumt den profilspezifischen Eintrag, den Legacy-Eintrag und den
-  // ganz alten Steigungs-Faktor - "Zuruecksetzen" soll nicht einen von drei
-  // Storages stehen lassen, der beim naechsten Laden wieder auftaucht.
-  try{
-    localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);
-    localStorage.removeItem(calibStorageKey());
-    localStorage.removeItem(calibLegacyKey());
-  }catch(e){}
+  let removed=0;
+  for(const k of calibKeysFor(cameraFacing)){
+    try{if(localStorage.getItem(k)!==null){localStorage.removeItem(k);removed++;}}catch(e){}
+  }
   updateCalibDisplay();
+  const other=cameraFacing==='user'?'environment':'user';
+  const otherLeft=countCalibKeys(other);
+  const camLabel=(f)=>f==='user'?'Frontkamera':'Rückkamera';
+  showError('Kalibrierung zurückgesetzt: '+removed+(removed===1?' Eintrag':' Einträge')+
+    ' für alle Lichtprofile der '+camLabel(cameraFacing)+'.'+
+    (otherLeft>0?' Die '+camLabel(other)+' trägt noch '+otherLeft+' – bei geändertem Aufbau dort ebenfalls zurücksetzen.':''));
 }
 
 function loadTrainData(){

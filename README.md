@@ -63,6 +63,8 @@ Nach dem ersten gespeicherten Punkt ersetzt jede weitere Kalibrierung nur noch `
 
 **Umgehen:** Bei geändertem optischem Aufbau (Wechsel Papier ↔ Kosinus-Korrektor, andere Halterung) erst **Zurücksetzen**, dann neu kalibrieren. Ein bloßes Nachkalibrieren behält den alten ersten Punkt.
 
+**Was Zurücksetzen räumt (seit v3.4.8):** alle Lichtprofile der **aktuellen Kamera**, nicht nur das gerade gewählte — ein geänderter Aufbau entwertet jedes Profil gleichermaßen, der Diffusor sitzt vor dem Sensor. Bis v3.4.7 blieb unter den übrigen Profilen still die Kalibrierung des alten Aufbaus stehen und lieferte beim nächsten Profilwechsel unbemerkt falsche Werte. Die **andere Kamera** wird nicht mitgeräumt (eigener Sensor) — liegt dort noch etwas, sagt die Meldung nach dem Zurücksetzen, wie viel.
+
 ### 3. Q kennt keinen Belichtungs-Faktor
 
 Der Qualitätsindex ist das Produkt aus Clipping, Homogenität, Signal und Stabilität. Ob die Belichtung ihr Zielband (Y 25–220) je erreicht hat, geht **nicht** ein — eine Sitzung dauerhaft außerhalb des Bands meldet weiterhin Q = 100 %.

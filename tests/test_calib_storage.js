@@ -88,7 +88,7 @@ t('Ganz alter Steigungs-Faktor (v2) wird als Legacy erkannt', ()=>{
   assert.strictEqual(api.calibLegacyScope,true);
 });
 
-t('resetCalibration raeumt alle drei Storages', ()=>{
+t('resetCalibration raeumt alle drei Storage-Generationen', ()=>{
   for(const k of Object.keys(store)) delete store[k];
   api.cameraFacing='user'; api.manualLightKey='SUNLIGHT';
   store['ppfd_calibFactor_v2_user']='2.0';
@@ -99,6 +99,31 @@ t('resetCalibration raeumt alle drei Storages', ()=>{
   api.loadCalib();
   assert.strictEqual(api.customCalibFactor,null);
   assert.strictEqual(api.calibLegacyScope,false);
+});
+
+t('REGRESSION v3.4.8: resetCalibration raeumt ALLE Lichtprofile der Kamera', ()=>{
+  // Der Test darueber seedet nur das AKTIVE Profil und konnte deshalb nicht
+  // sehen, dass die uebrigen stehenblieben. Das README schreibt
+  // "Zuruecksetzen" aber als Prozedur fuer einen geaenderten optischen Aufbau
+  // vor ("Bekannte Grenzen", Punkt 2) - der entwertet jedes Profil.
+  for(const k of Object.keys(store)) delete store[k];
+  api.cameraFacing='user'; api.manualLightKey='SUNLIGHT';
+  for(const [p,ref] of [['SUNLIGHT',300],['LED_GROW',400],['SODIUM_HPS',500],['AUTO',600]]){
+    store['ppfd_calib2_v1_user_'+p]=JSON.stringify({p1:{raw:100,ref},p2:null});
+  }
+  // Andere Kamera: eigener Sensor, eigene Kalibrierung - muss ueberleben.
+  store['ppfd_calib2_v1_environment_SUNLIGHT']=JSON.stringify({p1:{raw:100,ref:700},p2:null});
+
+  api.resetCalibration();
+
+  assert.deepStrictEqual(Object.keys(store),['ppfd_calib2_v1_environment_SUNLIGHT'],
+    'uebrig: '+JSON.stringify(Object.keys(store)));
+  // Kein Profil darf beim Wechsel wieder auftauchen - genau das war der Fehler.
+  for(const p of ['SUNLIGHT','LED_GROW','SODIUM_HPS','AUTO']){
+    api.manualLightKey=p; api.loadCalib();
+    assert.strictEqual(api.customCalibFactor,null,'Profil '+p+' traegt noch eine Kalibrierung');
+    assert.strictEqual(api.calibLegacyScope,false,'Profil '+p+' faellt auf einen Legacy-Eintrag zurueck');
+  }
 });
 
 t('Zwei-Punkt-Fit ueberlebt den Roundtrip durch den Storage', ()=>{
