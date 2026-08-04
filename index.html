@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.7</title>
+<title>PPFD Meter Pro v3.4.8</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.7</span>
+  <span class="app-title">PPFD Meter Pro v3.4.8</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,7 +193,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.7 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.8 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -203,6 +203,8 @@
     Flicker-Hysterese zählt Detektionen statt Frames<br>
     Vollständiger Zustands-Reset beim Moduswechsel · Messschleife gegen Canvas-Fehler abgesichert<br>
     Q-Gate nur auf Frame-Repräsentativität (dunkle Szenen frieren die Anzeige nicht mehr ein)<br>
+    Uniformitäts-Achse gatet erst ab ausreichendem Signal · Session-ID im Trainingsdaten-Export<br>
+    Zurücksetzen räumt alle Lichtprofile der Kamera (Aufbau-Wechsel)<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -510,6 +512,9 @@ const Q_CLIP_FULL=0.01,Q_CLIP_ZERO=0.15;
 const Q_UNI_FULL=0.05,Q_UNI_ZERO=0.40;
 const Q_STAB_FULL=0.02,Q_STAB_ZERO=0.25;
 const SIGNAL_FULL_LIN=0.04;
+// v3.4.8: Mindesthelligkeit, ab der qUniformity im GATE mitzaehlen darf.
+// Begruendung in computeQuality().
+const Q_UNI_GATE_MIN_LIN=0.02;
 // v3.4.3: Q wurde bisher nur ANGEZEIGT und exportiert, nie als Filter benutzt -
 // schlechte Frames liefen ungefiltert in den Kalman. Unterhalb der Schwelle
 // wird der Kalman jetzt gehalten (kein update), wie es bei Clipping laengst
@@ -613,8 +618,34 @@ function computeQuality(o){
   //                         unterdrueckt dann die Aenderung, die man messen will.
   // qGate benutzt deshalb nur die ersten beiden. Q selbst bleibt unveraendert
   // die 4-Faktor-Anzeige - dort ist "wenig Signal" zu Recht ein Guetemangel.
-  const qGate=qClip*qUniformity;
-  const gateWeakest=qUniformity<qClip?'uniformity':'clip';
+  //
+  // v3.4.8 FIX: qUniformity taugt nur OBERHALB einer Mindesthelligkeit als
+  // Gate-Achse. cv = std/zMean hat einen Nenner, der gegen 0 geht - im Dunkeln
+  // waechst cv also allein durch Rauschen, ohne dass die Ausleuchtung schlechter
+  // waere. analyzeFrame() setzt cv zwar unterhalb SIGNAL_CRIT_LIN (0.003) auf
+  // null, aber knapp DARUEBER ist cv eine grosse endliche Zahl. Damit blieb
+  // genau der Feldfall aus v3.4.7 bestehen, nur ueber die Uniformitaets- statt
+  // der Signal-Achse: bei zMean~0.004 wird cv>0.40, qUniformity faellt auf 0,
+  // das Gate schliesst und die Anzeige steht auf dem alten hellen Wert - jetzt
+  // mit der Begruendung "gehalten: Ausleuchtung".
+  // Das Band ist strukturell: qUniformity erreicht 0 bei cv>=Q_UNI_ZERO, also
+  // bei zMean<=std/Q_UNI_ZERO. Es ist nicht leer, sobald das Zonenrauschen
+  // std>Q_UNI_ZERO*SIGNAL_CRIT_LIN=0.0012 betraegt - im Dunkeln dominieren dort
+  // Vignettierung und Schwarzwert-Rest, die sich NICHT wegmitteln.
+  // Transient laeuft der Messwert durch das Band hindurch; pendelt sich das
+  // Licht darin ein (schwaches Umgebungslicht), steht die Zahl dauerhaft.
+  //
+  // Schwelle 0.02: dort waere fuer cv>=0.40 ein Zonen-std von 0.008 noetig,
+  // also Zonen, die sich real um ~40% unterscheiden - eine echte
+  // Ausleuchtungs-Schieflage, kein Rauschen. Zahlenmaessig gleich
+  // SIGNAL_LOW_LIN, aber bewusst eine eigene Konstante: sie folgt aus der
+  // cv-Rampe, nicht aus der Signal-Klassifikation.
+  // Q selbst bleibt unangetastet - fuer die ANZEIGE ist eine im Dunkeln
+  // unbeurteilbare Ausleuchtung zu Recht ein Guetemangel.
+  const uniGates=o.yMeanLin>=Q_UNI_GATE_MIN_LIN;
+  const qGateUni=uniGates?qUniformity:1;
+  const qGate=qClip*qGateUni;
+  const gateWeakest=qGateUni<qClip?'uniformity':'clip';
   return{q:q,qClip:qClip,qUniformity:qUniformity,qSignal:qSignal,qStability:qStability,
     weakest:weakest,qGate:qGate,gateWeakest:gateWeakest};
 }
@@ -728,6 +759,28 @@ document.addEventListener('visibilitychange',async()=>{
 });
 let lastFrameSnapshot=null;
 const TRAINDATA_KEY='ppfd_traindata_v1';
+// v3.4.8: Kennung des Messaufbaus. Zweck ist ausschliesslich die spaetere
+// Auswertung eines gepoolten Datensatzes - ohne sie laesst sich nicht
+// entscheiden, welche Punkte voneinander unabhaengig sind.
+//
+// Warum das zaehlt: eine Kreuzvalidierung, die Punkte desselben Aufbaus auf
+// Trainings- und Testseite verteilt, misst sich selbst. 300 Punkte aus 12
+// Aufbauten sind statistisch ~12 Punkte, nicht 300 - ein Modell sieht dann
+// traumhaft aus und faellt im Feld durch. Die Gruppe ist deshalb der AUFBAU,
+// nicht das Geraet: der Diffusor sind 2-3 Lagen feuchtes Papier, deren
+// Transmission sich bei jedem Neuanlegen aendert. Zwei Sitzungen am selben
+// Handy sind bereits verschiedene Gruppen.
+//
+// Proxy fuer "ein Aufbau" ist ein Kamerastart. Bewusst NICHT bei
+// revertToAutoExposure() erneuert: dort wechselt die Messkette, der Diffusor
+// bleibt aber liegen - der Betriebsmodus steht ohnehin in hardwareMode.
+let currentSessionId=null;
+function newSessionId(){
+  try{
+    if(crypto?.randomUUID) return crypto.randomUUID().slice(0,8);
+  }catch(e){}
+  return Math.random().toString(16).slice(2,10);
+}
 let exposureDriftStrikes=0,lastExposureCheckFrame=0,exposureLockBaseline=null;
 let lastSwPollFrame=0;
 const EXPOSURE_CHECK_INTERVAL=60,EXPOSURE_DRIFT_THRESHOLD=0.15,EXPOSURE_DRIFT_STRIKES_LIMIT=3;
@@ -1319,17 +1372,45 @@ function applyCalibration(){
     if(Math.abs(c.offset)>0.25*Math.max(d.p1.ref,d.p2.ref)) showError('Hinweis: ungewöhnlich großer Offset ('+(c.offset>0?'+':'')+c.offset.toFixed(1)+') – Kalibrierpunkte plausibel?');
   }
 }
+// Alle Storage-Schluessel, unter denen eine Kalibrierung fuer EINE Kamera
+// liegen kann: der ganz alte reine Steigungsfaktor, der profil-unabhaengige
+// Eintrag bis v3.4.2 und je ein Eintrag pro Lichtprofil ab v3.4.3.
+function calibKeysFor(facing){
+  return [CALIB_KEY+'_'+facing, CALIB2_KEY+'_'+facing,
+    ...['AUTO',...Object.keys(LIGHT_PROFILES)].map(k=>CALIB2_KEY+'_'+facing+'_'+k)];
+}
+function countCalibKeys(facing){
+  let n=0;
+  for(const k of calibKeysFor(facing)){try{if(localStorage.getItem(k)!==null) n++;}catch(e){}}
+  return n;
+}
+// v3.4.8 FIX: raeumt ALLE Lichtprofile dieser Kamera, nicht nur das aktive.
+// Das README schreibt "Zuruecksetzen" als Prozedur fuer einen geaenderten
+// optischen Aufbau vor (Wechsel Papier <-> Kosinus-Korrektor, andere
+// Halterung - "Bekannte Grenzen", Punkt 2). So ein Wechsel entwertet die
+// Kalibrierung ALLER Profile gleichermassen: der Diffusor sitzt vor dem
+// Sensor, nicht vor einem Lichtprofil.
+// Bis v3.4.7 raeumte die Funktion nur das gerade gewaehlte Profil. Wer der
+// Anleitung folgte, hatte danach unter den uebrigen Profilen still die
+// Kalibrierung des ALTEN Aufbaus stehen und bekam beim naechsten
+// Profilwechsel leise falsche Werte - unbemerkt, weil der Wechsel-Handler
+// nur den Uebergang kalibriert -> unkalibriert meldet, nicht den umgekehrten.
+// Die andere Kamera wird NICHT mitgeraeumt (eigener Sensor, eigene
+// Kalibrierung), aber gemeldet, wenn dort noch etwas liegt - ein
+// Aufbau-Wechsel betrifft sie oft ebenso.
 function resetCalibration(){
   customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;
-  // v3.4.3: raeumt den profilspezifischen Eintrag, den Legacy-Eintrag und den
-  // ganz alten Steigungs-Faktor - "Zuruecksetzen" soll nicht einen von drei
-  // Storages stehen lassen, der beim naechsten Laden wieder auftaucht.
-  try{
-    localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);
-    localStorage.removeItem(calibStorageKey());
-    localStorage.removeItem(calibLegacyKey());
-  }catch(e){}
+  let removed=0;
+  for(const k of calibKeysFor(cameraFacing)){
+    try{if(localStorage.getItem(k)!==null){localStorage.removeItem(k);removed++;}}catch(e){}
+  }
   updateCalibDisplay();
+  const other=cameraFacing==='user'?'environment':'user';
+  const otherLeft=countCalibKeys(other);
+  const camLabel=(f)=>f==='user'?'Frontkamera':'Rückkamera';
+  showError('Kalibrierung zurückgesetzt: '+removed+(removed===1?' Eintrag':' Einträge')+
+    ' für alle Lichtprofile der '+camLabel(cameraFacing)+'.'+
+    (otherLeft>0?' Die '+camLabel(other)+' trägt noch '+otherLeft+' – bei geändertem Aufbau dort ebenfalls zurücksetzen.':''));
 }
 
 function loadTrainData(){
@@ -1366,6 +1447,7 @@ function saveTrainPoint(){
     referenzPPFD:ref,
     notiz:(document.getElementById('trainNote').value||'').replace(/[,\n\r]/g,';'),
     kamera:cameraFacing,
+    sessionId:currentSessionId, // v3.4.8: Gruppierung fuer die Auswertung (s. TRAINDATA_KEY)
     ...lastFrameSnapshot
   };
   const data=loadTrainData();
@@ -1377,7 +1459,11 @@ function saveTrainPoint(){
 function exportTrainCSV(){
   const data=loadTrainData();
   if(data.length===0){showError('Keine Datenpunkte vorhanden.');return;}
-  const cols=['timestamp','geraet','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  // v3.4.8: 'sessionId' ergaenzt. Punkte aus der Zeit davor haben das Feld
+  // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
+  // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
+  // "Gruppe unbekannt", nicht "eigene Gruppe".
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -1533,6 +1619,7 @@ async function startCamera(){
     tempCompensator.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
     canvasFailStreak=0; // v3.4.6: sonst startet eine neue Sitzung mit dem Reststand der alten
+    currentSessionId=newSessionId(); // v3.4.8: neuer Aufbau => neue Gruppe (s. TRAINDATA_KEY)
     pixelStep=4;stepTransitionAccum=0;
     lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
     flickerResultFresh=false;
