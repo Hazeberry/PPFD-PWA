@@ -255,5 +255,23 @@ t('canvasFailStreak wird beim Kamerastart zurueckgesetzt', ()=>{
     'Reststand der vorigen Sitzung wuerde mitgeschleppt');
 });
 
+console.log('== Q-Gate-Verdrahtung (v3.4.7) ==');
+
+t('Der Render-Pfad gated auf qGate, nicht auf das volle Q', ()=>{
+  // Der Feldfehler war genau diese eine Referenz: lastQuality.q statt
+  // lastQuality.qGate - damit hielt "wenig Signal" die Anzeige an.
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const m=skript.match(/qGateOpen\s*=\s*([^;]+);/);
+  assert.ok(m,'qGateOpen-Zuweisung nicht gefunden');
+  assert.ok(/lastQuality\.qGate/.test(m[1]),'Gate laeuft nicht auf qGate: '+m[1].trim());
+  assert.ok(!/lastQuality\.q\s*>=/.test(m[1]),'Gate laeuft noch auf dem vollen Q: '+m[1].trim());
+});
+
+t('Der Halte-Grund nennt eine Gate-Achse, nicht den schwaechsten Q-Faktor', ()=>{
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  assert.ok(/Q_WEAKEST_LABELS\[lastQuality\.gateWeakest\]/.test(skript),
+    'Anzeige nennt weiter lastQuality.weakest - kann "Signal" melden, obwohl Signal nicht mehr haelt');
+});
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);

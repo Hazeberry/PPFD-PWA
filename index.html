@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.6</title>
+<title>PPFD Meter Pro v3.4.7</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.6</span>
+  <span class="app-title">PPFD Meter Pro v3.4.7</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,7 +193,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.6 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.7 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -202,6 +202,7 @@
     Verify-Zeitbudget mit Kostenmodell · SW-Fallback nur für Navigationen · Canvas-Puffer aus PROC_W/PROC_H<br>
     Flicker-Hysterese zählt Detektionen statt Frames<br>
     Vollständiger Zustands-Reset beim Moduswechsel · Messschleife gegen Canvas-Fehler abgesichert<br>
+    Q-Gate nur auf Frame-Repräsentativität (dunkle Szenen frieren die Anzeige nicht mehr ein)<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -519,14 +520,14 @@ const SIGNAL_FULL_LIN=0.04;
 // nachgerechnet, was die beiden Schwellen jeweils bedeuten:
 //   q=0.85 entspricht Uniformitaets-CV 13.6% ODER temporalCV 7.6% (je allein)
 //   q=0.35 entspricht Uniformitaets-CV 26%   ODER temporalCV 15.8%
-// Da q das PRODUKT der vier Teilfaktoren ist, trifft eine Kombination frueher:
-//   freihaendig, gute Lage   (CV 10%, tCV 4%, 0.5% clip) -> q=0.92
-//   freihaendig leicht schraeg(CV 16%, tCV 6%, 1% clip)  -> q=0.70
-//   schraeg+zittrig+Teilsaett.(CV 25%, tCV 12%, 4% clip) -> q=0.21
-// Bei 0.85 wuerde also schon "leicht schraeg gehalten" die Anzeige einfrieren -
+// Bei 0.85 wuerde schon "leicht schraeg gehalten" die Anzeige einfrieren -
 // eine voellig brauchbare Messlage, in der die App wie defekt wirken wuerde.
-// 0.35 trifft die Faelle, in denen mindestens ein Teilfaktor real kollabiert
-// ist. Die 0.85 bleiben als ANZEIGE-Schwelle (gruen/gelb/rot) erhalten.
+// Die 0.85 bleiben als ANZEIGE-Schwelle (gruen/gelb/rot) erhalten.
+// v3.4.7: Die Schwelle wirkt jetzt auf qGate (nur qClip*qUniformity), nicht
+// mehr auf das volle Q - Begruendung in computeQuality(). Damit gilt fuer den
+// Gate-Pfad allein die Uniformitaets-Achse (CV 26% ~ 0.35) bzw. der
+// Saettigungsanteil; die frueher mitzaehlenden Signal- und Stabilitaets-Achsen
+// duerfen die Anzeige nicht mehr anhalten.
 const Q_GATE_HOLD=0.35;
 
 class TemporalStats{
@@ -592,7 +593,30 @@ function computeQuality(o){
   if(qUniformity<wVal){weakest='uniformity';wVal=qUniformity;}
   if(qSignal<wVal){weakest='signal';wVal=qSignal;}
   if(qStability<wVal){weakest='stability';wVal=qStability;}
-  return{q:q,qClip:qClip,qUniformity:qUniformity,qSignal:qSignal,qStability:qStability,weakest:weakest};
+  // v3.4.7 FIX (Feldbericht): Das Q-Gate darf NICHT auf dem vollen Q laufen.
+  // Feldfall: Licht geht von hell auf dunkel, die Anzeige bleibt auf dem alten
+  // Wert stehen ("gehalten: Signal") statt gegen 0 zu laufen - das Geraet
+  // meldet Licht, wo keines mehr ist. Das ist die gefaehrlichste Sorte Fehler,
+  // die diese App machen kann.
+  //
+  // Ursache ist eine Verwechslung in v3.4.3: "schlechte Messguete" wurde mit
+  // "der Messwert hat sich nicht geaendert" gleichgesetzt. Die vier Faktoren
+  // verhalten sich dabei grundverschieden:
+  //   qClip, qUniformity  - sagen aus, dass der FRAME die Szene nicht
+  //                         repraesentiert (uebersteuert, ungleich ausgeleuchtet).
+  //                         Der wahre Wert ist unbekannt -> halten ist richtig.
+  //   qSignal             - korreliert DIREKT mit dem Messwert. Wenig Signal
+  //                         heisst wenig Licht. Halten ist hier nicht nur
+  //                         nutzlos, sondern faelscht das Ergebnis.
+  //   qStability          - korreliert mit der AENDERUNG. Genau bei einem
+  //                         echten Lichtwechsel schlaegt er aus - halten
+  //                         unterdrueckt dann die Aenderung, die man messen will.
+  // qGate benutzt deshalb nur die ersten beiden. Q selbst bleibt unveraendert
+  // die 4-Faktor-Anzeige - dort ist "wenig Signal" zu Recht ein Guetemangel.
+  const qGate=qClip*qUniformity;
+  const gateWeakest=qUniformity<qClip?'uniformity':'clip';
+  return{q:q,qClip:qClip,qUniformity:qUniformity,qSignal:qSignal,qStability:qStability,
+    weakest:weakest,qGate:qGate,gateWeakest:gateWeakest};
 }
 
 const U_CAL_CALIBRATED=0.05;
@@ -1947,7 +1971,7 @@ function processLoop(timestamp){
   // Der Median wird auch bei gehaltenem Kalman weiter gefuettert, damit das
   // Fenster beim Zurueckkommen nicht mit veralteten Werten startet.
   const medianPPFD=ppfdMedian.push(rawPPFD);
-  const qGateOpen=!lastQuality||lastQuality.q>=Q_GATE_HOLD;
+  const qGateOpen=!lastQuality||lastQuality.qGate>=Q_GATE_HOLD;
   const holdKalman=isClipping||!qGateOpen;
   const displayPPFD=tempStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
   const state=appFSM.update(tempStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
@@ -1967,7 +1991,7 @@ function processLoop(timestamp){
     const uExp=lastUncertainty.uRel*2;
     document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2, 95 %)'
       +(customCalibFactor===null?' · unkalibriert':'')
-      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.weakest]);
+      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest]);
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
     document.getElementById('uncertaintyVal').textContent='–';

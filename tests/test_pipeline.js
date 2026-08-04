@@ -149,6 +149,82 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
 });
 
+console.log('== Q-Gate: nur Frame-Repraesentativitaet (v3.4.7) ==');
+
+const qq = (o) => P.computeQuality(Object.assign(
+  { clipRatio: 0, uniformityCV: 0.05, yMeanLin: 0.2, temporalCV: 0.01 }, o));
+
+t('REGRESSION Feldfall: dunkle Szene haelt die Anzeige NICHT mehr an', () => {
+  // Screenshot v3.4.6: Licht ging aus, Anzeige blieb auf 1.7 stehen mit
+  // "gehalten: Signal". Wenig Signal heisst wenig Licht - das ist der
+  // Messwert, kein Grund ihn einzufrieren.
+  const dunkel = qq({ yMeanLin: 0.001, uniformityCV: null, temporalCV: null });
+  assert.strictEqual(dunkel.q, 0, 'Q soll weiterhin 0 melden (Guete ist wirklich schlecht)');
+  assert.ok(dunkel.qGate >= P.Q_GATE_HOLD,
+    'Gate muss offen bleiben, qGate=' + dunkel.qGate.toFixed(3));
+});
+
+t('REGRESSION: echter Lichtwechsel (hoher temporalCV) haelt nicht an', () => {
+  // Beim Uebergang hell->dunkel spitzt temporalCV zu. Genau die Aenderung
+  // will man messen - halten unterdrueckt sie.
+  const wechsel = qq({ temporalCV: 0.8, yMeanLin: 0.02 });
+  assert.ok(wechsel.q < 0.1, 'Q faellt zu Recht');
+  assert.ok(wechsel.qGate >= P.Q_GATE_HOLD, 'Gate muss offen bleiben, qGate=' + wechsel.qGate.toFixed(3));
+});
+
+t('Unrepraesentative Frames werden weiterhin gehalten', () => {
+  const schraeg = qq({ uniformityCV: 0.30 });
+  assert.ok(schraeg.qGate < P.Q_GATE_HOLD, 'CV 30% muss halten, qGate=' + schraeg.qGate.toFixed(3));
+  assert.strictEqual(schraeg.gateWeakest, 'uniformity');
+
+  const uebersteuert = qq({ clipRatio: 0.12 });
+  assert.ok(uebersteuert.qGate < P.Q_GATE_HOLD, 'starkes Clipping muss halten');
+  assert.strictEqual(uebersteuert.gateWeakest, 'clip');
+});
+
+t('qGate haengt nachweislich NICHT von Signal und Stabilitaet ab', () => {
+  const basis = qq({}).qGate;
+  assert.ok(Number.isFinite(basis), 'qGate existiert nicht (Wert: ' + basis + ')');
+  for (const y of [0.0001, 0.001, 0.01, 0.5, 5]) {
+    assert.strictEqual(qq({ yMeanLin: y }).qGate, basis, 'yMeanLin=' + y + ' hat qGate veraendert');
+  }
+  for (const tcv of [0, 0.05, 0.3, 2.0, null]) {
+    assert.strictEqual(qq({ temporalCV: tcv }).qGate, basis, 'temporalCV=' + tcv + ' hat qGate veraendert');
+  }
+});
+
+t('Q selbst bleibt der unveraenderte 4-Faktor-Index', () => {
+  const q = qq({ clipRatio: 0.02, uniformityCV: 0.09, yMeanLin: 0.03, temporalCV: 0.03 });
+  assert.ok(Math.abs(q.q - q.qClip * q.qUniformity * q.qSignal * q.qStability) < 1e-12,
+    'Q ist nicht mehr das Produkt aller vier');
+  assert.ok(q.q < q.qGate, 'Q muss strenger sein als das Gate');
+});
+
+t('gateWeakest nennt nur Gate-Achsen und ist im Label-Vokabular', () => {
+  for (const o of [{ clipRatio: 0.2 }, { uniformityCV: 0.5 }, { yMeanLin: 1e-5 }, { temporalCV: 3 }]) {
+    const g = P.computeQuality(Object.assign({ clipRatio: 0, uniformityCV: 0.05, yMeanLin: 0.2, temporalCV: 0.01 }, o)).gateWeakest;
+    assert.ok(g === 'clip' || g === 'uniformity', 'gateWeakest = ' + g);
+  }
+});
+
+t('Ende zu Ende: nach Lichtausfall laeuft die Anzeige gegen 0', () => {
+  // Median -> Kalman -> Gate, so wie im Render-Pfad verdrahtet.
+  const k = new P.AdaptivePPFDKalmanFilter();
+  const med = new P.RollingMedian(P.MEDIAN_WINDOW);
+  let x = 0;
+  for (let i = 0; i < 300; i++) x = k.update(med.push(400));   // eingeschwungen hell
+  assert.ok(x > 380, 'Vorbedingung: haelt 400');
+  // Licht aus: Rohwert faellt auf ~0, Guete kippt ueber das Signal
+  const dunkel = qq({ yMeanLin: 0.0008, uniformityCV: null, temporalCV: null });
+  let gehalten = 0;
+  for (let i = 0; i < 300; i++) {
+    const m = med.push(0.5);
+    if (dunkel.qGate >= P.Q_GATE_HOLD) x = k.update(m); else gehalten++;
+  }
+  assert.strictEqual(gehalten, 0, 'Gate hat ' + gehalten + ' Frames blockiert');
+  assert.ok(x < 5, 'Anzeige haengt bei ' + x.toFixed(1) + ' statt gegen 0 zu laufen');
+});
+
 console.log('== Unsicherheits-Boden & README-Konsistenz (v3.4.7) ==');
 
 // Der kleinste Wert, den die App ueberhaupt anzeigen kann: kalibriert, bestes
