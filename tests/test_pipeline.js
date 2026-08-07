@@ -22,7 +22,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, TemperatureCompensator };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, TemperatureCompensator };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -147,6 +147,82 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'LOW_PERF');
   for (let i = 0; i < 6; i++) s = fsm.update(true, false, true, 10);  // Clipping beginnt
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
+});
+
+console.log('== Kalibrier-Geltungsbereich (v3.4.10) ==');
+
+const P1 = { raw: 100, ref: 90 }, P2 = { raw: 900, ref: 1010 };
+const FIT2 = P.computeCalib2(P1, P2);          // x1.15 -25.0, Null-Zone bei 21.7
+const FIT1 = P.computeCalib2({ raw: 400, ref: 500 }, null); // reine Steigung, offsetfrei
+
+t('Innerhalb der Stuetzstellen: ok', () => {
+  for (const raw of [100, 300, 500, 900]) {
+    assert.strictEqual(P.calibRangeStatus(raw, P1, P2, FIT2).state, 'ok', 'raw=' + raw);
+  }
+});
+
+t('REGRESSION: die Null-Zone wird als eigener Zustand gemeldet', () => {
+  // Punkt 1 der bekannten Grenzen: unterhalb |offset|/slope klemmt der
+  // Aufrufer auf 0 - das ist keine Messung mehr, sondern ein Artefakt.
+  const zeroAt = -FIT2.offset / FIT2.slope;
+  assert.ok(Math.abs(zeroAt - 21.74) < 0.1, 'Testaufbau: Null-Zone bei ' + zeroAt.toFixed(2));
+  for (const raw of [1, 10, 21]) {
+    const r = P.calibRangeStatus(raw, P1, P2, FIT2);
+    assert.strictEqual(r.state, 'zero-zone', 'raw=' + raw);
+    assert.ok(Math.abs(r.zeroAt - zeroAt) < 1e-9, 'zeroAt muss mitgeliefert werden');
+  }
+  // Knapp darueber ist es wieder "nur" Extrapolation.
+  assert.strictEqual(P.calibRangeStatus(23, P1, P2, FIT2).state, 'below');
+});
+
+t('Unter- und Ueberschreitung an den dokumentierten Faktoren', () => {
+  const lo = P1.raw, hi = P2.raw;
+  assert.strictEqual(P.calibRangeStatus(lo * P.CALIB_RANGE_LO - 1, P1, P2, FIT2).state, 'below');
+  assert.strictEqual(P.calibRangeStatus(lo * P.CALIB_RANGE_LO + 1, P1, P2, FIT2).state, 'ok');
+  assert.strictEqual(P.calibRangeStatus(hi * P.CALIB_RANGE_HI + 1, P1, P2, FIT2).state, 'above');
+  assert.strictEqual(P.calibRangeStatus(hi * P.CALIB_RANGE_HI - 1, P1, P2, FIT2).state, 'ok');
+});
+
+t('Ein-Punkt-Kalibrierung hat keine Null-Zone', () => {
+  const r = P.calibRangeStatus(1, { raw: 400, ref: 500 }, null, FIT1);
+  assert.strictEqual(r.zeroAt, 0, 'offsetfreier Fit darf keine Null-Zone melden');
+  assert.strictEqual(r.state, 'below', 'weit unterhalb der Stuetzstelle -> extrapoliert');
+});
+
+t('Ein-Punkt-Fit spannt um seine eine Stuetzstelle', () => {
+  const p = { raw: 400, ref: 500 };
+  assert.strictEqual(P.calibRangeStatus(400, p, null, FIT1).state, 'ok');
+  assert.strictEqual(P.calibRangeStatus(250, p, null, FIT1).state, 'ok');
+  assert.strictEqual(P.calibRangeStatus(150, p, null, FIT1).state, 'below');
+  assert.strictEqual(P.calibRangeStatus(900, p, null, FIT1).state, 'above');
+});
+
+t('Reihenfolge der Punkte ist egal', () => {
+  for (const raw of [10, 50, 300, 2000]) {
+    assert.strictEqual(P.calibRangeStatus(raw, P1, P2, FIT2).state,
+      P.calibRangeStatus(raw, P2, P1, FIT2).state, 'raw=' + raw);
+  }
+});
+
+t('Ohne Kalibrierung und ohne Stuetzstellen wird nichts behauptet', () => {
+  assert.strictEqual(P.calibRangeStatus(500, P1, P2, null).state, 'uncalibrated');
+  // Legacy-Faktor: Fit vorhanden, Punkte nicht -> Bereich unbekannt.
+  assert.strictEqual(P.calibRangeStatus(500, null, null, FIT1).state, 'unknown');
+  assert.strictEqual(P.calibRangeStatus(500, { raw: 0 }, null, FIT1).state, 'unknown');
+});
+
+t('Unbrauchbare Rohwerte kippen die Auskunft nicht', () => {
+  for (const raw of [0, -5, NaN, Infinity]) {
+    const r = P.calibRangeStatus(raw, P1, P2, FIT2);
+    assert.strictEqual(r.state, 'ok', 'raw=' + raw + ' -> ' + r.state);
+    assert.ok(Number.isFinite(r.lo) && Number.isFinite(r.hi), 'Spanne muss trotzdem stimmen');
+  }
+});
+
+t('Die gemeldete Spanne ist die tatsaechliche der Stuetzstellen', () => {
+  const r = P.calibRangeStatus(500, P1, P2, FIT2);
+  assert.strictEqual(r.lo, 100);
+  assert.strictEqual(r.hi, 900);
 });
 
 console.log('== Lichtprofile: Blurple-Neuzuschnitt (v3.4.8) ==');

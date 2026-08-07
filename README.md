@@ -14,7 +14,7 @@ Auf dem Smartphone: Seite öffnen → Browser-Menü → **„Zum Startbildschirm
 
 1. **Diffusor:** Empfohlen ist ein echter **Kosinus-Korrektor** wie der **Lightray Diffuser & Cosine Corrector** (Clip-On vor der Frontkamera). DIY-Alternative: 2–3 Lagen weißes Kopierpapier (80 g/m²) auf die Linse legen.
 2. **Kamera aktivieren**, 300 Frames Warmup abwarten (Temperatur-Stabilisierung).
-3. **Kalibrieren** (einmalig pro Kamera): Referenz-PAR-Meter danebenhalten, Wert eingeben. Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich.
+3. **Kalibrieren** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
 
 Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pixelgenau pro Kamera.
 
@@ -44,7 +44,7 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 
 Vier Punkte aus dem Code-Review, die bewusst offen sind — sie brauchen eine Produkt-/Anzeige-Entscheidung, keinen Bugfix. Wer die App ernsthaft benutzt, sollte sie kennen.
 
-### 1. Zwei-Punkt-Kalibrierung kann eine stille Null-Zone erzeugen
+### 1. Zwei-Punkt-Kalibrierung kann eine Null-Zone erzeugen
 
 Bei negativem Offset klemmt die Pipeline alles unterhalb von `|Offset| / Steigung` auf exakt **0**. Das passiert bei völlig plausiblen Kalibrierpunkten und schlägt kein Guard an:
 
@@ -52,9 +52,9 @@ Bei negativem Offset klemmt die Pipeline alles unterhalb von `|Offset| / Steigun
 |---|---|---|
 | 100 → 90 und 900 → 1010 | `×1.1500 −25.0` | raw < **21,7** |
 
-Im schwachen Licht (Zeltrand, Dämmerung) zeigt das Gerät dann hartnäckig 0 und wirkt defekt. Der Fit ist dort schlicht extrapoliert, und `u_cal` bildet das nicht ab.
+Im schwachen Licht (Zeltrand, Dämmerung) zeigt das Gerät dann 0. Der Fit ist dort schlicht extrapoliert, und `u_cal` bildet das nicht ab. **Seit v3.4.10 ist es immerhin nicht mehr still** — die App warnt, sobald der Rohwert die Null-Zone oder allgemein den kalibrierten Bereich verlässt. Die angezeigte Unsicherheit bleibt bewusst unverändert: Extrapolation ist eine echte Unsicherheitsquelle, aber ihre Größe ist ohne Vergleichsmessungen nicht bezifferbar.
 
-**Erkennen:** Die aktive Kalibrierung im Kalibrier-Dialog zeigt den Offset mit Vorzeichen. Steht dort ein Minus, teile den Betrag durch die Steigung — unterhalb dieses Werts ist die Anzeige nicht vertrauenswürdig.
+**Erkennen:** Seit v3.4.10 meldet die App das selbst — unterhalb der Schwelle steht in der Unsicherheitszeile „⚠ unter der Null-Zone der Kalibrierung (ab Rohwert X geklemmt) – Anzeige ist keine Messung". Zusätzlich zeigt der Kalibrier-Dialog den Offset mit Vorzeichen; steht dort ein Minus, ist der Betrag durch die Steigung die Schwelle.
 **Umgehen:** Für Messungen im unteren Bereich die Ein-Punkt-Kalibrierung benutzen — sie ist konstruktionsbedingt offsetfrei. Achtung, das erfordert **Zurücksetzen**: ein neuer Punkt landet sonst als zweiter Stützpunkt und der Offset ist wieder da (siehe Punkt 2).
 
 ### 2. Der erste Kalibrierpunkt ist unlöschbar
@@ -96,8 +96,8 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **101 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **23 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **110 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_calib_storage.js` | Integrations-Harness, **30 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
@@ -105,8 +105,8 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 101/101 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 23/23 erwartet
+node tests/test_pipeline.js         # 110/110 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 30/30 erwartet
 node tests/test_exposure_budget.js  #  7/7  erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 ```

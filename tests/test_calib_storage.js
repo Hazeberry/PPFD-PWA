@@ -32,6 +32,8 @@ const api=new Function('localStorage','document','window','navigator','console',
     get manualLightKey(){return manualLightKey;}, set manualLightKey(v){manualLightKey=v;},
     get cameraFacing(){return cameraFacing;}, set cameraFacing(v){cameraFacing=v;},
     calibStorageKey,calibLegacyKey,loadCalib,resetCalibration,computeCalib2,CALIB2_KEY,
+    get calibP1(){return calibP1;},get calibP2(){return calibP2;},get calibFit(){return calibFit;},
+    calibRangeStatus,calibRangeSuffix,
     PROC_W,PROC_H};`
 )(localStorage,document,window,navigator,console,()=>0,{now:()=>Date.now()},()=>{},()=>true);
 
@@ -296,6 +298,71 @@ t('Der Halte-Grund nennt eine Gate-Achse, nicht den schwaechsten Q-Faktor', ()=>
   const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
   assert.ok(/Q_WEAKEST_LABELS\[lastQuality\.gateWeakest\]/.test(skript),
     'Anzeige nennt weiter lastQuality.weakest - kann "Signal" melden, obwohl Signal nicht mehr haelt');
+});
+
+console.log('== Bereichswarnung: Verdrahtung (v3.4.10) ==');
+
+t('loadCalib() fuehrt die Stuetzstellen mit', ()=>{
+  for(const k of Object.keys(store)) delete store[k];
+  api.cameraFacing='user'; api.manualLightKey='SUNLIGHT';
+  store['ppfd_calib2_v1_user_SUNLIGHT']=JSON.stringify({p1:{raw:100,ref:90},p2:{raw:900,ref:1010}});
+  api.loadCalib();
+  assert.ok(api.calibP1&&api.calibP2,'Punkte nicht uebernommen - Bereich waere immer unbekannt');
+  assert.strictEqual(api.calibP1.raw,100);
+  assert.strictEqual(api.calibP2.raw,900);
+  assert.ok(api.calibFit&&Math.abs(api.calibFit.offset+25)<1e-9,'Fit nicht mitgefuehrt');
+});
+
+t('Der Bereich wird aus dem mitgefuehrten Zustand korrekt beurteilt', ()=>{
+  assert.strictEqual(api.calibRangeStatus(500,api.calibP1,api.calibP2,api.calibFit).state,'ok');
+  assert.strictEqual(api.calibRangeStatus(10,api.calibP1,api.calibP2,api.calibFit).state,'zero-zone');
+  assert.strictEqual(api.calibRangeStatus(5000,api.calibP1,api.calibP2,api.calibFit).state,'above');
+});
+
+t('resetCalibration() raeumt auch die Stuetzstellen', ()=>{
+  api.resetCalibration();
+  assert.strictEqual(api.calibP1,null,'p1 blieb stehen - Warnung bezoege sich auf geloeschte Punkte');
+  assert.strictEqual(api.calibP2,null);
+  assert.strictEqual(api.calibFit,null);
+  assert.strictEqual(api.calibRangeStatus(500,api.calibP1,api.calibP2,api.calibFit).state,'uncalibrated');
+});
+
+t('Legacy-Kalibrierung ohne Punkte behauptet keinen Bereich', ()=>{
+  for(const k of Object.keys(store)) delete store[k];
+  api.cameraFacing='user'; api.manualLightKey='SUNLIGHT';
+  store['ppfd_calibFactor_v2_user']='2.5';   // reiner Steigungs-Faktor, keine Punkte
+  api.loadCalib();
+  assert.ok(api.customCalibFactor!==null,'Vorbedingung: Legacy-Faktor greift');
+  assert.strictEqual(api.calibP1,null,'ein Faktor ohne Punkte darf keine Stuetzstellen vortaeuschen');
+});
+
+t('Der Warntext nennt Zahlen und unterscheidet die Zustaende', ()=>{
+  const mk=(state,extra={})=>Object.assign({state,lo:100,hi:900,zeroAt:21.74},extra);
+  assert.strictEqual(api.calibRangeSuffix(null),'');
+  assert.strictEqual(api.calibRangeSuffix(mk('ok')),'');
+  assert.strictEqual(api.calibRangeSuffix(mk('uncalibrated')),'');
+  assert.strictEqual(api.calibRangeSuffix(mk('unknown')),'','unbekannter Bereich darf nicht warnen');
+  const z=api.calibRangeSuffix(mk('zero-zone'));
+  assert.ok(/Null-Zone/.test(z)&&/21\.7/.test(z),'Null-Zonen-Text ohne Schwelle: '+z);
+  const u=api.calibRangeSuffix(mk('below'));
+  assert.ok(/unter dem kalibrierten Bereich/.test(u)&&/100/.test(u)&&/900/.test(u),u);
+  const o=api.calibRangeSuffix(mk('above'));
+  assert.ok(/über dem kalibrierten Bereich/.test(o),o);
+});
+
+t('Die Unsicherheitszeile haengt den Bereichsbefund an', ()=>{
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  assert.ok(/calibRangeSuffix\(lastRange\)/.test(skript),
+    'Suffix nicht verdrahtet - die Warnung waere unsichtbar');
+  assert.ok(/lastRange=calibRangeStatus\(/.test(skript),'lastRange wird nie berechnet');
+});
+
+t('Der Bereich landet im CSV-Export', ()=>{
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const cols=skript.match(/const cols=\[([^\]]+)\]/)[1];
+  for(const c of ['calibBereich','calibSpanLo','calibSpanHi'])
+    assert.ok(cols.includes("'"+c+"'"),'Spalte '+c+' fehlt');
+  assert.ok(/calibBereich:lastRange\?/.test(skript),'Feld wird nie befuellt');
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');
