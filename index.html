@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.9</title>
+<title>PPFD Meter Pro v3.4.10</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.9</span>
+  <span class="app-title">PPFD Meter Pro v3.4.10</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,7 +193,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.9 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.10 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -206,6 +206,7 @@
     Uniformitäts-Achse gatet erst ab ausreichendem Signal · Session-ID im Trainingsdaten-Export<br>
     Zurücksetzen räumt alle Lichtprofile der Kamera (Aufbau-Wechsel)<br>
     Blurple-Profil nur noch manuell · moderne Weißlicht-Grow-LEDs über „Weiße LED“<br>
+    Warnung außerhalb des kalibrierten Bereichs (inkl. Null-Zone)<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -702,6 +703,40 @@ function computeCalib2(p1,p2){
   const slope=Math.max(CALIB2_MIN_SLOPE,Math.min(CALIB2_MAX_SLOPE,rawSlope));
   return{slope:slope,offset:p1.ref-slope*p1.raw,points:2,clamped:slope!==rawSlope};
 }
+
+// v3.4.10: Geltungsbereich einer Kalibrierung. Die Punkte stuetzen die Gerade
+// nur dort, wo sie erhoben wurden; ausserhalb wird extrapoliert, ohne dass es
+// bisher irgendwo sichtbar war. Zwei Anlaesse:
+//   - Dimmstufen: wer bei Volllast kalibriert und bei 20% misst, verlaesst den
+//     gestuetzten Bereich. (Bei reiner PWM-Dimmung bleibt das Spektrum gleich
+//     und die Skalierung gueltig - die Warnung sagt "ungestuetzt", nicht
+//     "falsch". Bei Stromdimmung verschiebt sich das Spektrum zusaetzlich.)
+//   - Die Null-Zone: bei negativem Offset klemmt der Aufrufer alles unterhalb
+//     |offset|/slope auf 0. Dort ist die Anzeige nicht nur ungestuetzt,
+//     sondern gar keine Messung mehr. Das ist Punkt 1 der bekannten Grenzen.
+// Die Unsicherheit wird bewusst NICHT aufgeblaeht: Extrapolation ist eine
+// echte Unsicherheitsquelle, aber ihre Groesse ist ohne Vergleichsmessungen
+// nicht bezifferbar. Sichtbar machen statt schaetzen.
+// Toleranz: unterhalb der halben bzw. oberhalb der doppelten Stuetzstelle.
+// Der Faktor 2 ist bewusst grosszuegig - eine Warnung, die staendig steht,
+// liest niemand mehr.
+const CALIB_RANGE_LO=0.5,CALIB_RANGE_HI=2.0;
+function calibRangeStatus(raw,p1,p2,calib){
+  if(!calib) return{state:'uncalibrated',lo:null,hi:null,zeroAt:0};
+  const stuetzen=[p1,p2].filter(p=>p&&Number.isFinite(p.raw)&&p.raw>0).map(p=>p.raw);
+  // Ohne bekannte Stuetzstellen (Legacy-Faktor ohne Punkte) laesst sich der
+  // Bereich nicht beurteilen - dann lieber nichts behaupten.
+  if(stuetzen.length===0) return{state:'unknown',lo:null,hi:null,zeroAt:0};
+  const lo=Math.min(...stuetzen),hi=Math.max(...stuetzen);
+  const zeroAt=calib.offset<0?-calib.offset/calib.slope:0;
+  if(!Number.isFinite(raw)||raw<=0) return{state:'ok',lo:lo,hi:hi,zeroAt:zeroAt};
+  // Null-Zone zuerst: sie ist der schwerwiegendere Befund und liegt per
+  // Konstruktion immer unterhalb des Bereichs.
+  if(zeroAt>0&&raw<=zeroAt) return{state:'zero-zone',lo:lo,hi:hi,zeroAt:zeroAt};
+  if(raw<lo*CALIB_RANGE_LO) return{state:'below',lo:lo,hi:hi,zeroAt:zeroAt};
+  if(raw>hi*CALIB_RANGE_HI) return{state:'above',lo:lo,hi:hi,zeroAt:zeroAt};
+  return{state:'ok',lo:lo,hi:hi,zeroAt:zeroAt};
+}
 /* ===PURE-PIPELINE-END=== */
 
 class SoftwareGainController {
@@ -805,6 +840,11 @@ const CALIB_KEY='ppfd_calibFactor_v2';
 // fungiert weiterhin als STEIGUNG, calibOffset als additiver Term.
 const CALIB2_KEY='ppfd_calib2_v1';
 let calibOffset=0,calibPoints=0;
+// v3.4.10: Stuetzstellen der aktiven Kalibrierung, damit calibRangeStatus()
+// pro Frame ohne localStorage-Zugriff auskommt. Werden bei jedem Laden und
+// jedem Speichern mitgefuehrt; null = Bereich unbekannt (Legacy-Faktor ohne
+// Punkte), dann wird bewusst nichts behauptet.
+let calibP1=null,calibP2=null,calibFit=null;
 // v3.4.3 (Review/Paper-Abgleich): Kalibrierung wird jetzt pro KAMERA UND
 // LICHTPROFIL gespeichert. Grund: der Profilfaktor wirkt auf parVal (nicht auf
 // Lux, s. LIGHT_PROFILES), und dieser Versatz ist profilabhaengig - bei
@@ -823,10 +863,12 @@ function readCalib2(key){try{return JSON.parse(localStorage.getItem(key))||null;
 function loadCalib2Data(){return readCalib2(calibStorageKey());}
 function loadCalib(){
   calibLegacyScope=false;
+  calibP1=null;calibP2=null;calibFit=null;
   const d=loadCalib2Data();
   if(d){
     const c=computeCalib2(d.p1||null,d.p2||null);
-    if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;return;}
+    if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;
+      calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c;return;}
   }
   // Legacy-Fallback: vor v3.4.3 gespeicherte Kalibrierung (nur pro Kamera).
   // Sie wird weiter benutzt - Nutzerdaten werden nicht stillschweigend
@@ -835,7 +877,8 @@ function loadCalib(){
   const legacy=readCalib2(calibLegacyKey());
   if(legacy){
     const c=computeCalib2(legacy.p1||null,legacy.p2||null);
-    if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=true;return;}
+    if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=true;
+      calibP1=legacy.p1||null;calibP2=legacy.p2||null;calibFit=c;return;}
   }
   customCalibFactor=loadCalibFactor();calibOffset=0;calibPoints=customCalibFactor!==null?1:0;
   if(customCalibFactor!==null) calibLegacyScope=true;
@@ -884,6 +927,26 @@ const Q_STATUS_LABELS={
 // v3.4.3: Kurzform desselben Befunds fuer die Zeile unter dem Messwert, wenn
 // das Q-Gate den Kalman anhaelt (computeQuality liefert 'weakest' bereits mit).
 const Q_WEAKEST_LABELS={clip:'Sättigung',uniformity:'Ausleuchtung',signal:'Signal',stability:'Stabilität'};
+// v3.4.10: Letzter Bereichsbefund der Kalibrierung (s. calibRangeStatus).
+let lastRange=null;
+function calibRangeSuffix(rg){
+  if(!rg) return '';
+  // Spannen-Grenzen duerfen gerundet werden, die Null-Zonen-SCHWELLE nicht:
+  // Der Nutzer vergleicht sie mit dem Live-Rohwert, da ist eine Nachkommastelle
+  // der Unterschied zwischen "knapp drueber" und "knapp drunter".
+  const n=(v)=>v<10?v.toFixed(1):String(Math.round(v));
+  const schwelle=(v)=>v<100?v.toFixed(1):String(Math.round(v));
+  switch(rg.state){
+    case 'zero-zone':
+      return ' · ⚠ unter der Null-Zone der Kalibrierung (ab Rohwert '+schwelle(rg.zeroAt)+' geklemmt) – Anzeige ist keine Messung';
+    case 'below':
+      return ' · ⚠ unter dem kalibrierten Bereich ('+n(rg.lo)+'–'+n(rg.hi)+' roh) – extrapoliert';
+    case 'above':
+      return ' · ⚠ über dem kalibrierten Bereich ('+n(rg.lo)+'–'+n(rg.hi)+' roh) – extrapoliert';
+    default:
+      return '';
+  }
+}
 function updateQualityStatus(q){
   const map=[['qsClip','clip',q.qClip],['qsUniformity','uniformity',q.qUniformity],['qsSignal','signal',q.qSignal],['qsStability','stability',q.qStability]];
   for(const[id,key,val]of map){
@@ -1368,6 +1431,7 @@ function applyCalibration(){
   try{localStorage.removeItem(calibLegacyKey());}catch(e){}
   try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);}catch(e){} // Legacy-Faktor ersetzt
   customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;
+  calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c; // v3.4.10: Stuetzstellen mitziehen
   updateCalibDisplay();
   if(c.clamped){showError('Steigung außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
   if(c.points===1){
@@ -1406,6 +1470,7 @@ function countCalibKeys(facing){
 // Aufbau-Wechsel betrifft sie oft ebenso.
 function resetCalibration(){
   customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;
+  calibP1=null;calibP2=null;calibFit=null; // v3.4.10
   let removed=0;
   for(const k of calibKeysFor(cameraFacing)){
     try{if(localStorage.getItem(k)!==null){localStorage.removeItem(k);removed++;}}catch(e){}
@@ -1469,7 +1534,7 @@ function exportTrainCSV(){
   // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
   // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
   // "Gruppe unbekannt", nicht "eigene Gruppe".
-  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -2008,6 +2073,9 @@ function processLoop(timestamp){
   let rawPPFD=hSensor_par*calibConstant*currentFactor*gainMultiplier;
   rawPPFD*=tempStatus.factor;
   currentRawPPFDUncalibrated=rawPPFD;
+  // v3.4.10: Bereichsbefund auf dem UNKALIBRIERTEN Rohwert - die
+  // Stuetzstellen sind in derselben Groesse gespeichert (p.raw).
+  lastRange=calibRangeStatus(rawPPFD,calibP1,calibP2,calibFit);
   // v3.4.0: affine Korrektur (Steigung + optionaler Offset aus Zwei-Punkt-
   // Kalibrierung); negativ geklemmt, damit ein Offset nie negative PPFD erzeugt.
   if(customCalibFactor!==null) rawPPFD=Math.max(0,rawPPFD*customCalibFactor+calibOffset);
@@ -2034,6 +2102,13 @@ function processLoop(timestamp){
     // v3.4.3: Geltungsbereich der Kalibrierung mit exportieren. Ohne diese
     // beiden Felder laesst sich in einem gepoolten Datensatz nicht mehr
     // unterscheiden, ob ein Punkt unter dem passenden Profil kalibriert war.
+    // v3.4.10: Geltungsbereich der Kalibrierung mitexportieren. Ein Datenpunkt,
+    // der ausserhalb der Stuetzstellen erhoben wurde, ist sonst spaeter nicht
+    // mehr von einem gestuetzten zu unterscheiden - fuer gepoolte Daten der
+    // Unterschied zwischen Messung und Extrapolation.
+    calibBereich:lastRange?lastRange.state:null,
+    calibSpanLo:lastRange?lastRange.lo:null,
+    calibSpanHi:lastRange?lastRange.hi:null,
     calibProfil:customCalibFactor===null?null:manualLightKey,
     calibGeltung:customCalibFactor===null?null:(calibLegacyScope?'profilunabhaengig':'profilspezifisch'),
     signalLevel:signalStatus.level,
@@ -2082,9 +2157,13 @@ function processLoop(timestamp){
     // dritte Messwert ausserhalb. Der Faktor wird jetzt mit angezeigt.
     // CSV behaelt bewusst k=1 (Rohgroesse), die Spalte heisst dafuer uRel_k1.
     const uExp=lastUncertainty.uRel*2;
+    // v3.4.10: Geltungsbereich der Kalibrierung mit anzeigen. Bewusst in
+    // dieser Zeile - sie beantwortet die Frage "wie sehr kann ich der Zahl
+    // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
     document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2, 95 %)'
       +(customCalibFactor===null?' · unkalibriert':'')
-      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest]);
+      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
+      +calibRangeSuffix(lastRange);
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
     document.getElementById('uncertaintyVal').textContent='–';
