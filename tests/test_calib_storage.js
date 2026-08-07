@@ -12,7 +12,7 @@ const src=html.match(/<script>([\s\S]*)<\/script>/)[1];
 
 const store={};
 const localStorage={getItem:k=>k in store?store[k]:null,setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}};
-const mkEl=()=>new Proxy({textContent:'',value:'',style:new Proxy({},{get:()=>'' ,set:()=>true}),className:'',
+const mkEl=()=>new Proxy({textContent:'',value:'',style:{setProperty(){},removeProperty(){}},className:'',
   classList:{add(){},remove(){},contains:()=>false},addEventListener(){},appendChild(){},querySelectorAll:()=>[]},
   {get(t,p){if(p in t)return t[p];return typeof p==='string'?function(){return mkEl();}:undefined;},set(t,p,v){t[p]=v;return true;}});
 // Elemente je id zwischenspeichern: das Skript setzt beim Laden Attribute
@@ -33,7 +33,7 @@ const api=new Function('localStorage','document','window','navigator','console',
     get cameraFacing(){return cameraFacing;}, set cameraFacing(v){cameraFacing=v;},
     calibStorageKey,calibLegacyKey,loadCalib,resetCalibration,computeCalib2,CALIB2_KEY,
     get calibP1(){return calibP1;},get calibP2(){return calibP2;},get calibFit(){return calibFit;},
-    calibRangeStatus,calibRangeSuffix,
+    calibRangeStatus,calibRangeSuffix,setCalibRangeLine,loadCalibFactor,CALIB_KEY,
     PROC_W,PROC_H};`
 )(localStorage,document,window,navigator,console,()=>0,{now:()=>Date.now()},()=>{},()=>true);
 
@@ -345,9 +345,9 @@ t('Der Warntext nennt Zahlen und unterscheidet die Zustaende', ()=>{
   const z=api.calibRangeSuffix(mk('zero-zone'));
   assert.ok(/Null-Zone/.test(z)&&/21\.7/.test(z),'Null-Zonen-Text ohne Schwelle: '+z);
   const u=api.calibRangeSuffix(mk('below'));
-  assert.ok(/unter dem kalibrierten Bereich/.test(u)&&/100/.test(u)&&/900/.test(u),u);
+  assert.ok(/[Uu]nter dem kalibrierten Bereich/.test(u)&&/100/.test(u)&&/900/.test(u),u);
   const o=api.calibRangeSuffix(mk('above'));
-  assert.ok(/über dem kalibrierten Bereich/.test(o),o);
+  assert.ok(/[Üü]ber dem kalibrierten Bereich/.test(o),o);
 });
 
 t('Die Unsicherheitszeile haengt den Bereichsbefund an', ()=>{
@@ -363,6 +363,76 @@ t('Der Bereich landet im CSV-Export', ()=>{
   for(const c of ['calibBereich','calibSpanLo','calibSpanHi'])
     assert.ok(cols.includes("'"+c+"'"),'Spalte '+c+' fehlt');
   assert.ok(/calibBereich:lastRange\?/.test(skript),'Feld wird nie befuellt');
+});
+
+console.log('== Legacy-Faktor: Bereichsauskunft (v3.4.11) ==');
+
+t('REGRESSION: v3.3.x-Faktor meldet nicht mehr "uncalibrated"', ()=>{
+  // Pfad 3 in loadCalib() (CALIB_KEY, reiner Steigungs-Faktor ohne Punkte)
+  // liess calibFit auf null. calibRangeStatus meldete daraufhin
+  // 'uncalibrated', WAEHREND customCalibFactor gesetzt war - im CSV stand
+  // calibBereich='uncalibrated' neben einer gefuellten Spalte calibSteigung.
+  for(const k of Object.keys(store)) delete store[k];
+  api.cameraFacing='user'; api.manualLightKey='SUNLIGHT';
+  store['ppfd_calibFactor_v2_user']='2.5';
+  api.loadCalib();
+  assert.ok(api.customCalibFactor!==null,'Vorbedingung: Faktor greift');
+  assert.ok(api.calibFit,'calibFit fehlt - Bereichsauskunft widerspricht der Kalibrierung');
+  assert.strictEqual(api.calibFit.slope,2.5);
+  assert.strictEqual(api.calibFit.offset,0,'ein reiner Faktor ist offsetfrei');
+  const r=api.calibRangeStatus(500,api.calibP1,api.calibP2,api.calibFit);
+  assert.strictEqual(r.state,'unknown','erwartet: kalibriert, aber Bereich unbeurteilbar');
+});
+
+t('Der synthetisierte Fit erzeugt keine Null-Zone und keinen Warntext', ()=>{
+  const r=api.calibRangeStatus(1,api.calibP1,api.calibP2,api.calibFit);
+  assert.strictEqual(r.zeroAt,0,'offsetfreier Fit darf keine Null-Zone haben');
+  assert.strictEqual(api.calibRangeSuffix(r),'','unbekannter Bereich darf nicht warnen');
+});
+
+t('Ohne jede Kalibrierung bleibt es bei "uncalibrated"', ()=>{
+  for(const k of Object.keys(store)) delete store[k];
+  api.loadCalib();
+  assert.strictEqual(api.customCalibFactor,null);
+  assert.strictEqual(api.calibFit,null,'ohne Kalibrierung darf kein Fit erfunden werden');
+  assert.strictEqual(api.calibRangeStatus(500,null,null,api.calibFit).state,'uncalibrated');
+});
+
+t('migrateCalibrationStorage() raeumt CALIB_KEY NICHT - der Pfad bleibt erreichbar', ()=>{
+  // Festgehalten, weil die Annahme "der Pfad stirbt aus" nicht stimmt: die
+  // Migration entfernt nur den unversionierten v1-Schluessel.
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const mig=skript.slice(skript.indexOf('function migrateCalibrationStorage'));
+  const koerper=mig.slice(0,mig.indexOf('\n}')+2);
+  assert.ok(/'ppfd_calibFactor_'\+f/.test(koerper),'Migration fasst den v1-Schluessel nicht mehr an');
+  assert.ok(!/v2/.test(koerper),'Migration raeumt jetzt auch CALIB_KEY - Kommentar in loadCalib() nachziehen');
+});
+
+console.log('== Bereichswarnung: eigene Zeile (v3.4.11) ==');
+
+t('Die Warnung steht in einem eigenen Element, nicht in der Unsicherheitszeile', ()=>{
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  assert.ok(/id="calibRangeVal"/.test(html),'Element fehlt');
+  assert.ok(/setCalibRangeLine\(calibRangeSuffix\(lastRange\)\)/.test(skript),'nicht verdrahtet');
+  const uz=skript.match(/uncertaintyVal'\)\.textContent='Unsicherheit[\s\S]{0,300}?;/)[0];
+  assert.ok(!/calibRangeSuffix/.test(uz),'Warnung haengt weiter an der Unsicherheitszeile');
+});
+
+t('Die Zeile blendet sich aus, wenn es nichts zu warnen gibt', ()=>{
+  const el=els.get('calibRangeVal')||(document.getElementById('calibRangeVal'));
+  api.setCalibRangeLine('');
+  assert.strictEqual(el.style.display,'none');
+  api.setCalibRangeLine('⚠ Test');
+  assert.strictEqual(el.textContent,'⚠ Test');
+  assert.strictEqual(el.style.display,'block');
+  api.setCalibRangeLine('');
+  assert.strictEqual(el.style.display,'none');
+});
+
+t('Beim Stoppen der Messung verschwindet die Warnung', ()=>{
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const anzahl=(skript.match(/setCalibRangeLine\(''\)/g)||[]).length;
+  assert.ok(anzahl>=2,'nur '+anzahl+'x zurueckgesetzt - Warnung koennte stehen bleiben');
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');
