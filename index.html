@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.10</title>
+<title>PPFD Meter Pro v3.4.11</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.10</span>
+  <span class="app-title">PPFD Meter Pro v3.4.11</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -109,6 +109,10 @@
     <div class="ppfd-unit">µmol · m⁻² · s⁻¹</div>
     <div class="ppfd-unit" id="dliVal" style="margin-top:2px">DLI 12h: – · 18h: – mol·m⁻²·d⁻¹</div>
     <div class="ppfd-unit" id="uncertaintyVal" style="margin-top:2px">–</div>
+    <!-- v3.4.11: Bereichswarnung als eigene Zeile. Am Ende der grauen
+         Unsicherheitszeile umbrach sie und ging unter - eine Warnung, die
+         man ueberliest, erfuellt ihren Zweck nicht. -->
+    <div class="ppfd-unit" id="calibRangeVal" style="margin-top:2px;color:var(--amber);display:none"></div>
     <div class="zone-badge" id="zoneBadge" style="color:var(--muted);border-color:var(--muted)">Kamera starten</div>
   </div>
 
@@ -193,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.10 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.11 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -881,7 +885,22 @@ function loadCalib(){
       calibP1=legacy.p1||null;calibP2=legacy.p2||null;calibFit=c;return;}
   }
   customCalibFactor=loadCalibFactor();calibOffset=0;calibPoints=customCalibFactor!==null?1:0;
-  if(customCalibFactor!==null) calibLegacyScope=true;
+  if(customCalibFactor!==null){
+    calibLegacyScope=true;
+    // v3.4.11 FIX (Review/tin): Auch der ganz alte Steigungs-Faktor (CALIB_KEY,
+    // v3.3.x) braucht einen calibFit - sonst meldet calibRangeStatus() den
+    // Zustand 'uncalibrated', WAEHREND die App kalibriert ist, und die
+    // CSV-Spalte calibBereich widerspricht sichtbar der Spalte calibSteigung.
+    // Ohne Stuetzstellen ist die ehrliche Aussage 'unknown': kalibriert, aber
+    // Bereich nicht beurteilbar. Sichtbar aendert sich fuer den Nutzer nichts
+    // (beide Zustaende erzeugen keinen Warntext) - es geht um die Aussage im
+    // Datensatz.
+    // Der Pfad ist NICHT selbstheilend: migrateCalibrationStorage() entfernt
+    // nur den unversionierten v1-Schluessel 'ppfd_calibFactor_<cam>', nicht
+    // CALIB_KEY = 'ppfd_calibFactor_v2_<cam>'. Wer mit v3.3.x kalibriert hat
+    // und nie neu kalibriert, laeuft dauerhaft hier durch.
+    calibFit={slope:customCalibFactor,offset:0,points:1,clamped:false};
+  }
 }
 function migrateCalibrationStorage(){
   let migrated=false;
@@ -929,6 +948,11 @@ const Q_STATUS_LABELS={
 const Q_WEAKEST_LABELS={clip:'Sättigung',uniformity:'Ausleuchtung',signal:'Signal',stability:'Stabilität'};
 // v3.4.10: Letzter Bereichsbefund der Kalibrierung (s. calibRangeStatus).
 let lastRange=null;
+function setCalibRangeLine(text){
+  const el=document.getElementById('calibRangeVal');
+  el.textContent=text;
+  el.style.display=text?'block':'none';
+}
 function calibRangeSuffix(rg){
   if(!rg) return '';
   // Spannen-Grenzen duerfen gerundet werden, die Null-Zonen-SCHWELLE nicht:
@@ -938,11 +962,11 @@ function calibRangeSuffix(rg){
   const schwelle=(v)=>v<100?v.toFixed(1):String(Math.round(v));
   switch(rg.state){
     case 'zero-zone':
-      return ' · ⚠ unter der Null-Zone der Kalibrierung (ab Rohwert '+schwelle(rg.zeroAt)+' geklemmt) – Anzeige ist keine Messung';
+      return '⚠ Unter der Null-Zone der Kalibrierung (ab Rohwert '+schwelle(rg.zeroAt)+' geklemmt) – die Anzeige ist hier keine Messung';
     case 'below':
-      return ' · ⚠ unter dem kalibrierten Bereich ('+n(rg.lo)+'–'+n(rg.hi)+' roh) – extrapoliert';
+      return '⚠ Unter dem kalibrierten Bereich (Stützstellen '+n(rg.lo)+'–'+n(rg.hi)+' roh) – extrapoliert';
     case 'above':
-      return ' · ⚠ über dem kalibrierten Bereich ('+n(rg.lo)+'–'+n(rg.hi)+' roh) – extrapoliert';
+      return '⚠ Über dem kalibrierten Bereich (Stützstellen '+n(rg.lo)+'–'+n(rg.hi)+' roh) – extrapoliert';
     default:
       return '';
   }
@@ -1746,7 +1770,8 @@ function stopCamera(){
   document.getElementById('ppfdVal').textContent='–––';
   document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
   document.getElementById('uncertaintyVal').textContent='–';
-  lastUncertainty=null;
+  setCalibRangeLine(''); // v3.4.11: Warnung nicht ueber das Stoppen hinaus stehen lassen
+  lastUncertainty=null;lastRange=null;
   document.getElementById('luxVal').textContent='–';
   document.getElementById('yMeanVal').textContent='–';
   document.getElementById('confVal').textContent='–';
@@ -2162,11 +2187,12 @@ function processLoop(timestamp){
     // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
     document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2, 95 %)'
       +(customCalibFactor===null?' · unkalibriert':'')
-      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
-      +calibRangeSuffix(lastRange);
+      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest]);
+    setCalibRangeLine(calibRangeSuffix(lastRange));
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
     document.getElementById('uncertaintyVal').textContent='–';
+    setCalibRangeLine('');
   }
   document.getElementById('luxVal').textContent=Math.round(lux);
   document.getElementById('yMeanVal').textContent=yMean_gamma.toFixed(1);

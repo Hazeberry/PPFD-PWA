@@ -54,7 +54,7 @@ Bei negativem Offset klemmt die Pipeline alles unterhalb von `|Offset| / Steigun
 
 Im schwachen Licht (Zeltrand, Dämmerung) zeigt das Gerät dann 0. Der Fit ist dort schlicht extrapoliert, und `u_cal` bildet das nicht ab. **Seit v3.4.10 ist es immerhin nicht mehr still** — die App warnt, sobald der Rohwert die Null-Zone oder allgemein den kalibrierten Bereich verlässt. Die angezeigte Unsicherheit bleibt bewusst unverändert: Extrapolation ist eine echte Unsicherheitsquelle, aber ihre Größe ist ohne Vergleichsmessungen nicht bezifferbar.
 
-**Erkennen:** Seit v3.4.10 meldet die App das selbst — unterhalb der Schwelle steht in der Unsicherheitszeile „⚠ unter der Null-Zone der Kalibrierung (ab Rohwert X geklemmt) – Anzeige ist keine Messung". Zusätzlich zeigt der Kalibrier-Dialog den Offset mit Vorzeichen; steht dort ein Minus, ist der Betrag durch die Steigung die Schwelle.
+**Erkennen:** Seit v3.4.10 meldet die App das selbst — unterhalb der Schwelle erscheint unter dem Messwert eine gelbe Warnzeile: „⚠ Unter der Null-Zone der Kalibrierung (ab Rohwert X geklemmt) – die Anzeige ist hier keine Messung". Zusätzlich zeigt der Kalibrier-Dialog den Offset mit Vorzeichen; steht dort ein Minus, ist der Betrag durch die Steigung die Schwelle.
 **Umgehen:** Für Messungen im unteren Bereich die Ein-Punkt-Kalibrierung benutzen — sie ist konstruktionsbedingt offsetfrei. Achtung, das erfordert **Zurücksetzen**: ein neuer Punkt landet sonst als zweiter Stützpunkt und der Offset ist wieder da (siehe Punkt 2).
 
 ### 2. Der erste Kalibrierpunkt ist unlöschbar
@@ -97,7 +97,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
 | `tests/test_pipeline.js` | Node-Regressions-Harness, **110 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **30 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
+| `tests/test_calib_storage.js` | Integrations-Harness, **37 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
@@ -106,7 +106,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 
 ```bash
 node tests/test_pipeline.js         # 110/110 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 30/30 erwartet
+node tests/test_calib_storage.js    # 37/37 erwartet
 node tests/test_exposure_budget.js  #  7/7  erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 ```
