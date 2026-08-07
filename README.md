@@ -23,7 +23,7 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 ## Was drinsteckt
 
 - **Exakte sRGB-Linearisierung** (statt γ≈2.2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken
-- **Lichtquellen-Profile** (Sonnenlicht, weiße LED, LED Grow, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit, Auto-Erkennung oder manuelle Wahl (persistiert). Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
+- **Lichtquellen-Profile** (Sonnenlicht, weiße LED, Blurple-Panel, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit. Auto-Erkennung nur für die drei Klassen, die sich in der RGB-Chromatizität belastbar trennen lassen (Sonnenlicht, HPS, Leuchtstoff) — der Rest ist manuell wählbar. **Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED“**: ihr 660-nm-Rot-Boost ist für eine RGB-Kamera unsichtbar (V(λ) ≈ 0,06 bei 660 nm gegen ≈ 0,50 bei 610 nm) und ohne Kalibrierung nicht erfassbar. Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
 - **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) als Güte-Anzeige. Der **Kalman-Halt** läuft bewusst auf einem engeren Kriterium (`Q_clip × Q_uniformity < 0.35`): nur wenn der *Frame die Szene nicht abbildet* — übersteuert oder ungleich ausgeleuchtet — wird der letzte Wert gehalten. Wenig Signal und hohe zeitliche Streuung sind *Messergebnisse*, keine Haltegründe: wird es dunkel, läuft die Anzeige gegen 0, statt einzufrieren
 - **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %). Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
 
@@ -31,7 +31,7 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
   |---|---|
   | unkalibriert + Auto-Erkennung (Auslieferungszustand) | ±73 % |
   | unkalibriert, Profil manuell gewählt | ±71 % |
-  | kalibriert, LED Grow oder Auto-Erkennung | ±22 % |
+  | kalibriert, Blurple-Panel oder Auto-Erkennung | ±22 % |
   | kalibriert, weiße LED manuell | ±19 % |
   | kalibriert, Sonnenlicht/HPS manuell | **±14 %** ← Boden |
 
@@ -96,8 +96,8 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **92 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **22 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **101 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_calib_storage.js` | Integrations-Harness, **23 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
@@ -105,8 +105,8 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 92/92 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 22/22 erwartet
+node tests/test_pipeline.js         # 101/101 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 23/23 erwartet
 node tests/test_exposure_budget.js  #  7/7  erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 ```

@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.8</title>
+<title>PPFD Meter Pro v3.4.9</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.8</span>
+  <span class="app-title">PPFD Meter Pro v3.4.9</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -193,7 +193,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.8 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.9 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -205,6 +205,7 @@
     Q-Gate nur auf Frame-Repräsentativität (dunkle Szenen frieren die Anzeige nicht mehr ein)<br>
     Uniformitäts-Achse gatet erst ab ausreichendem Signal · Session-ID im Trainingsdaten-Export<br>
     Zurücksetzen räumt alle Lichtprofile der Kamera (Aufbau-Wechsel)<br>
+    Blurple-Profil nur noch manuell · moderne Weißlicht-Grow-LEDs über „Weiße LED“<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -280,8 +281,13 @@ const Y_R=0.2126,Y_G=0.7152,Y_B=0.0722;
 // ein PAR-Meter, nicht Literaturwerte aus der Lux-Welt.
 const LIGHT_PROFILES={
   SUNLIGHT:{r:0.33,g:0.34,factor:0.0185,u:0.05,name:'Sonnenlicht',note:'Tageslicht (D65), auch bewölkt. Faktor gut abgesichert.',detect:true},
-  WHITE_LED:{factor:0.0185,u:0.08,name:'Weiße LED',note:'Weiße Vollspektrum-LEDs. CCT/CRI-abhängig – für kritische Messungen kalibrieren.',detect:false},
-  LED_GROW:{r:0.45,g:0.25,factor:0.0155,u:0.10,name:'LED Grow',note:'Rot/Blau-Panels ("Blurple"). Spektren variieren stark je nach Hersteller.',detect:true},
+  WHITE_LED:{factor:0.0185,u:0.08,name:'Weiße LED',note:'Weiße LEDs inkl. moderner Grow-Lampen (Weißlicht-Basis). Ein 660-nm-Rot-Boost ist für die RGB-Kamera unsichtbar – ohne Kalibrierung nicht erfasst.',detect:false},
+  // v3.4.8: Schluessel 'LED_GROW' bleibt bestehen - calibStorageKey() bindet
+  // gespeicherte Kalibrierungen daran, Umbenennen des Keys wuerde sie
+  // verwaisen lassen (loadCalib() faellt dann still auf unkalibriert zurueck).
+  // Geaendert werden nur name/note und detect. Praezedenzfall: METAL_HALIDE
+  // ist seit je detect:false und manuell waehlbar.
+  LED_GROW:{r:0.45,g:0.25,factor:0.0155,u:0.10,name:'Rot/Blau-Panel (Blurple)',note:'Ältere Blurple-Panels. Wirkung selbst unter Blurple nur ~3 % gegenüber Weißlicht – moderne Grow-LEDs mit Weißlicht-Basis: „Weiße LED" wählen.',detect:false},
   SODIUM_HPS:{r:0.52,g:0.41,factor:0.0122,u:0.05,name:'Natriumdampf',note:'HPS: charakteristisches Spektrum mit Lücken, Faktor vergleichsweise präzise.',detect:true},
   METAL_HALIDE:{factor:0.0145,u:0.06,name:'Metalldampf (MH)',note:'Breiteres Spektrum als HPS. Keine Auto-Erkennung – bitte manuell wählen.',detect:false},
   WHITE_FLUO:{r:0.30,g:0.38,factor:0.0140,u:0.08,name:'Leuchtstoff',note:'T5/T8-Röhren, phosphorabhängig.',detect:true}
