@@ -149,6 +149,64 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
 });
 
+console.log('== Lichtprofile: Blurple-Neuzuschnitt (v3.4.8) ==');
+
+const erkannt = (r, g, b) => {
+  const d = new P.LightSourceDetector();
+  let res; for (let i = 0; i < 6; i++) res = d.detect(r * 255, g * 255, b * 255);
+  return res;
+};
+const skala = (r, g, b, id) => P.calculatePARFromLinear(r, g, b, id) * P.LIGHT_PROFILES[id].factor;
+
+t('REGRESSION: Warmweiss wird nicht mehr als Blurple klassifiziert', () => {
+  // 2700K ohne jeden Rot-Boost landete auf LED_GROW (conf 59%) und wurde
+  // dadurch ~14% zu niedrig gemessen - Faktor 0.0155 statt 0.0185.
+  const res = erkannt(0.45, 0.34, 0.24);
+  assert.notStrictEqual(res.id, 'LED_GROW', 'Warmweiss wieder auf dem Blurple-Profil');
+  assert.strictEqual(res.factor, 0.0185, 'Faktor muss der Weisslicht-Faktor sein');
+});
+
+t('LED_GROW ist aus dem Kandidatenpool der Auto-Erkennung raus', () => {
+  const kandidaten = Object.keys(new P.LightSourceDetector().profiles);
+  assert.ok(!kandidaten.includes('LED_GROW'), 'noch im Pool: ' + kandidaten.join(', '));
+  assert.strictEqual(P.LIGHT_PROFILES.LED_GROW.detect, false);
+});
+
+t('Kein Weisslicht-Spektrum faellt mehr auf ein Nicht-Weisslicht-Profil', () => {
+  const weisstoene = [[0.42, 0.36, 0.26], [0.36, 0.38, 0.30], [0.45, 0.34, 0.24], [0.33, 0.34, 0.33]];
+  for (const [r, g, b] of weisstoene) {
+    const res = erkannt(r, g, b);
+    assert.strictEqual(res.factor, 0.0185,
+      `(${r}/${g}/${b}) -> ${res.id} mit Faktor ${res.factor}`);
+  }
+});
+
+t('HPS bleibt zuverlaessig erkennbar (das Profil verdient seinen Platz)', () => {
+  const res = erkannt(0.70, 0.45, 0.06);
+  assert.strictEqual(res.id, 'SODIUM_HPS');
+  assert.ok(res.conf > 0.5, 'Konfidenz zu niedrig: ' + res.conf.toFixed(2));
+});
+
+t('Der Schluessel LED_GROW bleibt erhalten (Kalibrierungen haengen daran)', () => {
+  // calibStorageKey() bindet an den String. Ein Umbenennen des Keys wuerde
+  // gespeicherte Kalibrierungen verwaisen lassen.
+  assert.ok('LED_GROW' in P.LIGHT_PROFILES, 'Schluessel entfernt - Kalibrierungen verwaisen');
+  assert.ok(/Blurple/i.test(P.LIGHT_PROFILES.LED_GROW.name), 'Name benennt das Spektrum nicht');
+});
+
+t('Manuelle Wahl von LED_GROW benutzt weiterhin die Blurple-Gewichte', () => {
+  assert.strictEqual(P.calculatePARFromLinear(1, 0, 0, 'LED_GROW'), 0.50, 'r-Gewicht verloren');
+  assert.strictEqual(P.calculatePARFromLinear(0, 1, 0, 'LED_GROW'), 0.15);
+  assert.strictEqual(P.calculatePARFromLinear(0, 0, 1, 'LED_GROW'), 0.35);
+});
+
+t('Blurple-Profil wirkt selbst unter Blurple nur marginal (dokumentierte Begruendung)', () => {
+  const b = [0.60, 0.12, 0.45];
+  const rel = skala(...b, 'LED_GROW') / skala(...b, 'WHITE_LED');
+  assert.ok(Math.abs(rel - 1) < 0.05,
+    'Abweichung ' + ((rel - 1) * 100).toFixed(1) + ' % - die note im Profil nennt ~3 %');
+});
+
 console.log('== Q-Gate: nur Frame-Repraesentativitaet (v3.4.7) ==');
 
 const qq = (o) => P.computeQuality(Object.assign(
@@ -489,13 +547,21 @@ t('Profile: Faktoren/Unsicherheiten plausibel, detect-Flags korrekt', () => {
   assert.strictEqual(P.LIGHT_PROFILES.WHITE_LED.detect, false);
   assert.strictEqual(P.LIGHT_PROFILES.METAL_HALIDE.detect, false);
 });
-t('Detektor nutzt nur detect-Profile; LED_GROW-Hysterese', () => {
+t('Detektor nutzt nur detect-Profile; Hysterese haelt die Wahl fest', () => {
   const det = new P.LightSourceDetector();
-  assert.ok(!('WHITE_LED' in det.profiles) && !('METAL_HALIDE' in det.profiles));
-  // Chromatizität nahe LED_GROW-Profil (r=0.45,g=0.25): R=135,G=75,B=90
+  // v3.4.8: LED_GROW ist zu WHITE_LED und METAL_HALIDE dazugekommen - alle
+  // drei sind nur noch manuell waehlbar (Begruendung s. LIGHT_PROFILES).
+  for (const k of ['WHITE_LED', 'METAL_HALIDE', 'LED_GROW']) {
+    assert.ok(!(k in det.profiles), k + ' darf nicht auto-erkannt werden');
+  }
+  // Chromatizitaet auf der HPS-Signatur (r=0.52,g=0.41): R=133,G=105,B=18
   let r;
-  for (let i = 0; i < 5; i++) r = det.detect(135, 75, 90);
-  assert.strictEqual(r.id, 'LED_GROW');
+  for (let i = 0; i < 5; i++) r = det.detect(133, 105, 18);
+  assert.strictEqual(r.id, 'SODIUM_HPS');
+  // Ein einzelner abweichender Frame kippt die Wahl nicht (Hysterese 3).
+  const vorher = r.id;
+  const s1 = det.detect(84, 87, 84);
+  assert.strictEqual(s1.id, vorher, 'ein Frame hat die Klassifikation gekippt');
 });
 t('calculatePARFromLinear: Gewichtungen summieren sich zu 1', () => {
   for (const id of ['LED_GROW', 'SODIUM_HPS', 'SUNLIGHT', 'WHITE_LED', 'METAL_HALIDE']) {
