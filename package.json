@@ -1,0 +1,13 @@
+{
+  "name": "ppfd-meter-pro",
+  "version": "3.4.11",
+  "private": true,
+  "description": "Test-Werkzeug fuer PPFD Meter Pro. Die App selbst (index.html) hat KEINE Abhaengigkeiten und braucht keinen Build-Step - diese Datei existiert ausschliesslich fuer die Property-Tests.",
+  "scripts": {
+    "test": "node tests/test_pipeline.js && node tests/test_calib_storage.js && node tests/test_exposure_budget.js && node tests/test_sw_fallback.js && node tests/test_properties.js",
+    "test:nodeps": "node tests/test_pipeline.js && node tests/test_calib_storage.js && node tests/test_exposure_budget.js && node tests/test_sw_fallback.js"
+  },
+  "devDependencies": {
+    "fast-check": "^4.9.0"
+  }
+}

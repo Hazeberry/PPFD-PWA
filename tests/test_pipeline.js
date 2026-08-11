@@ -868,11 +868,28 @@ t('v3.4.1: Ein-Punkt-Clamp (slope>10) mit Flag', () => {
   assert.strictEqual(c.clamped, true);
   assert.strictEqual(c.offset, 0);
 });
-t('v3.4.1: Zwei-Punkt-Clamp - Offset konsistent zur GECLAMPPTEN Steigung', () => {
-  const c = P.computeCalib2({ raw: 100, ref: 100 }, { raw: 200, ref: 1500 }); // rawSlope 14 -> 10
+t('v3.4.12: Zwei-Punkt-Clamp - Offset am Schwerpunkt, Fehler gleich verteilt', () => {
+  // Bis v3.4.11 haing der Offset an p1: die Gerade traf p1 exakt und verfehlte
+  // p2 um den vollen Clamp-Fehler. Ein Property-Test hat gezeigt, dass das
+  // ergebnisrelevant von der EINGABEREIHENFOLGE abhing - dieselben zwei
+  // Messpunkte, andere Reihenfolge, andere Kalibrierung.
+  // Jetzt verankert der Schwerpunkt: reihenfolgeunabhaengig, und die durch
+  // den Clamp erzwungene Abweichung verteilt sich auf beide Stuetzstellen.
+  const p1 = { raw: 100, ref: 100 }, p2 = { raw: 200, ref: 1500 }; // rawSlope 14 -> 10
+  const c = P.computeCalib2(p1, p2);
   approx(c.slope, P.CALIB2_MAX_SLOPE, 1e-12, 'slope geclamppt');
   assert.strictEqual(c.clamped, true);
-  approx(c.offset, 100 - P.CALIB2_MAX_SLOPE * 100, 1e-9, 'offset aus geclappter Steigung');
+  const mRaw = (p1.raw + p2.raw) / 2, mRef = (p1.ref + p2.ref) / 2;
+  approx(c.offset, mRef - P.CALIB2_MAX_SLOPE * mRaw, 1e-9, 'offset am Schwerpunkt');
+  // Beide Punkte werden um denselben Betrag verfehlt, mit umgekehrtem Vorzeichen.
+  const fehler = (p) => (c.slope * p.raw + c.offset) - p.ref;
+  approx(fehler(p1), -fehler(p2), 1e-9, 'Fehler symmetrisch auf beide Punkte');
+});
+t('v3.4.12: Der geclampte Fit haengt nicht an der Eingabereihenfolge', () => {
+  const p1 = { raw: 100, ref: 100 }, p2 = { raw: 200, ref: 1500 };
+  const a = P.computeCalib2(p1, p2), b = P.computeCalib2(p2, p1);
+  approx(a.slope, b.slope, 1e-12);
+  approx(a.offset, b.offset, 1e-9, 'Offset haengt an der Reihenfolge');
 });
 t('v3.4.1: Ungeclamppte Fits tragen clamped=false', () => {
   assert.strictEqual(P.computeCalib2({ raw: 400, ref: 500 }, null).clamped, false);
