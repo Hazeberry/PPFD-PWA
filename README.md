@@ -101,6 +101,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
+| `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
 | `package.json` | **Nur für die Property-Tests.** Die App selbst hat keine Abhängigkeiten und keinen Build-Step |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
 
@@ -114,6 +115,7 @@ node tests/test_sw_fallback.js      #  8/8  erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
 node tests/test_properties.js       # 31/31 erwartet
+node tests/test_model.js            #  3/3  erwartet
 ```
 
 Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
@@ -129,6 +131,10 @@ Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:n
 `test_properties.js` prüft **Invarianten statt Beispiele**: nicht „raw = 21,7 → erwarte `zero-zone`", sondern „für *jede* gültige Eingabe muss gelten: `state === 'ok'` heißt, der Rohwert liegt wirklich innerhalb der Toleranz". fast-check erzeugt je 500 Fälle pro Regel inklusive Randwerten und schrumpft einen Fehlschlag auf das kleinstmögliche Gegenbeispiel. Abgedeckt: sRGB-EOTF, `computeQuality`, `computeUncertainty`, `computeCalib2`, `calibRangeStatus`, `RollingMedian`. Laufzahl über `PROP_RUNS` steuerbar.
 
 Die stärkste Regel dort ist eine **Kopplung**: `state === 'zero-zone'` muss *genau dann* gelten, wenn `Math.max(0, raw·slope + offset)` auf 0 klemmt — wäre die Warnung zu eng, bliebe eine stille Null-Zone; wäre sie zu weit, warnte sie über echte Messwerte.
+
+`test_model.js` geht eine Stufe weiter: Statt einzelne Funktionen zu prüfen, würfelt es **Befehlsfolgen** (kalibrieren, Profil wechseln, Kamera wechseln, zurücksetzen, neu laden — beliebig verschränkt) und hält nach jedem Schritt ein Parallelmodell gegen den echten Modul-Zustand. Das findet Fehler, die erst durch die *Reihenfolge* entstehen.
+
+Angesetzt ist es dort, wo in diesem Projekt real Fehler steckten: der **Kalibrier-Storage** (drei Fehler — Profilbindung, Reset-Umfang, fehlender Fit beim Legacy-Faktor, alle in der Verdrahtung zwischen `localStorage` und Modul-Zustand, keiner in der Mathematik) und die **`AppStatusStateMachine`** (Hysterese zählte Frames statt Detektionen). Das Modell bildet bewusst *nicht* die Mathematik nach — für erwartete Kalibrierwerte dient das echte `computeCalib2()` als Orakel, sonst prüfte man eine Reimplementierung gegen sich selbst.
 
 ## Entstehung & Credits
 
