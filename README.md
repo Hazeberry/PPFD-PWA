@@ -96,20 +96,27 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **110 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **111 Tests** gegen den extrahierten Pure-Pipeline-Block |
 | `tests/test_calib_storage.js` | Integrations-Harness, **37 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
+| `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
+| `package.json` | **Nur für die Property-Tests.** Die App selbst hat keine Abhängigkeiten und keinen Build-Step |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
 
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 110/110 erwartet (kein Browser nötig)
+node tests/test_pipeline.js         # 111/111 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 37/37 erwartet
 node tests/test_exposure_budget.js  #  7/7  erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
+
+npm install                         # einmalig, nur für die Property-Tests
+node tests/test_properties.js       # 31/31 erwartet
 ```
+
+Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
 
 `test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Abgrenzung (dunkle Szene und Lichtwechsel dürfen nicht halten), Flicker-Hysterese, Kalman-Reset beim Moduswechsel und den Unsicherheits-Boden (inkl. Abgleich gegen die Zahlen in diesem README).
 
@@ -118,6 +125,10 @@ node tests/test_sw_fallback.js      #  8/8  erwartet
 `test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert.
 
 `test_sw_fallback.js` lädt `sw.js` in eine `ServiceWorkerGlobalScope`-Attrappe: die App-Shell darf nur bei Navigationen als Offline-Fallback kommen, ein fehlgeschlagenes Bild oder JSON bekommt einen echten Netzwerkfehler statt HTML.
+
+`test_properties.js` prüft **Invarianten statt Beispiele**: nicht „raw = 21,7 → erwarte `zero-zone`", sondern „für *jede* gültige Eingabe muss gelten: `state === 'ok'` heißt, der Rohwert liegt wirklich innerhalb der Toleranz". fast-check erzeugt je 500 Fälle pro Regel inklusive Randwerten und schrumpft einen Fehlschlag auf das kleinstmögliche Gegenbeispiel. Abgedeckt: sRGB-EOTF, `computeQuality`, `computeUncertainty`, `computeCalib2`, `calibRangeStatus`, `RollingMedian`. Laufzahl über `PROP_RUNS` steuerbar.
+
+Die stärkste Regel dort ist eine **Kopplung**: `state === 'zero-zone'` muss *genau dann* gelten, wenn `Math.max(0, raw·slope + offset)` auf 0 klemmt — wäre die Warnung zu eng, bliebe eine stille Null-Zone; wäre sie zu weit, warnte sie über echte Messwerte.
 
 ## Entstehung & Credits
 

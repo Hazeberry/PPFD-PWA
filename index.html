@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.11</title>
+<title>PPFD Meter Pro v3.4.12</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.11</span>
+  <span class="app-title">PPFD Meter Pro v3.4.12</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.11 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.12 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -705,7 +705,21 @@ function computeCalib2(p1,p2){
   const rawSlope=(p2.ref-p1.ref)/dRaw;
   if(!(rawSlope>0)) return null;
   const slope=Math.max(CALIB2_MIN_SLOPE,Math.min(CALIB2_MAX_SLOPE,rawSlope));
-  return{slope:slope,offset:p1.ref-slope*p1.raw,points:2,clamped:slope!==rawSlope};
+  // v3.4.12 FIX (Property-Test): Offset am SCHWERPUNKT beider Punkte
+  // verankern, nicht an p1. Gefunden von fast-check mit dem Gegenbeispiel
+  // p1={raw:6,ref:1.0000000000000002}, p2={raw:1,ref:1}: dort wird die
+  // Steigung geclampt, die Gerade geht dann durch KEINEN der beiden Punkte
+  // mehr - und weil sie an p1 hing, kam bei vertauschter Eingabereihenfolge
+  // ein anderer Offset heraus (0.40 gegen 0.90). Zwei Nutzer mit denselben
+  // zwei Messpunkten, nur in anderer Reihenfolge eingegeben, bekamen
+  // unterschiedliche Kalibrierungen.
+  // Der Schwerpunkt ist reihenfolgeunabhaengig und verteilt die durch den
+  // Clamp erzwungene Abweichung gleichmaessig auf beide Stuetzstellen, statt
+  // sie ganz auf eine zu kippen. Im UNGECLAMPTEN Fall aendert sich nichts:
+  // die Gerade durch beide Punkte geht ohnehin durch deren Schwerpunkt, sie
+  // trifft weiterhin beide exakt (per Property-Test abgesichert).
+  const mRaw=(p1.raw+p2.raw)/2,mRef=(p1.ref+p2.ref)/2;
+  return{slope:slope,offset:mRef-slope*mRaw,points:2,clamped:slope!==rawSlope};
 }
 
 // v3.4.10: Geltungsbereich einer Kalibrierung. Die Punkte stuetzen die Gerade
