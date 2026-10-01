@@ -138,7 +138,8 @@ Angesetzt ist es dort, wo in diesem Projekt real Fehler steckten: der **Kalibrie
 
 ## Entstehung & Credits
 
-Dieses Projekt wurde in Zusammenarbeit mit KI-Assistenten entwickelt — namentlich **Kimi (Moonshot AI)** und **Claude (Anthropic)**. Beide waren an Code-Reviews, der stufenweisen Architektur (Messkorrektheit → Konfidenzschicht → Zwei-Punkt-Kalibrierung → PWA), Fehleranalysen und Fixes beteiligt; Richtung, Entscheidungen und Feldtests lagen beim Projektinhaber. Weitere Modelle (u. a. Gemini, GLM) lieferten Review-Perspektiven, die kritisch geprüft und teils übernommen wurden.
+Dieses Projekt wurde in Zusammenarbeit mit KI-Assistenten entwickelt — namentlich 
+**Claude (Anthropic)**. war an Code-Reviews, der stufenweisen Architektur (Messkorrektheit → Konfidenzschicht → Zwei-Punkt-Kalibrierung → PWA), Fehleranalysen und Fixes beteiligt; Richtung, Entscheidungen und Feldtests lagen beim Projektinhaber. Weitere Modelle (u. a. Gemini, GLM) lieferten Review-Perspektiven, die kritisch geprüft und teils übernommen wurden.
 
 ## Lizenz
 
