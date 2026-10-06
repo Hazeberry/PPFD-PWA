@@ -2,7 +2,7 @@
 
 **Smartphone-Kamera-basierte PPFD/PAR-Messung für Pflanzenbeleuchtung — als installierbare PWA, komplett offline-fähig, ohne App-Store.**
 
-Die App verwandelt die Handykamera in ein PPFD-Messgerät (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel exakt (sRGB-EOTF nach IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet physikalisch auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte erweiterte Messunsicherheit (± %, k = 2)** aus.
+Die App schätzt mit der Handykamera die PPFD ab (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel mit der exakten sRGB-Kennlinie (IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet physikalisch auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte erweiterte Messunsicherheit (± %, k = 2)** aus. Absolut belastbar wird der Wert erst mit Kosinus-Korrektor und Kalibrierung — ohne beides taugt er vor allem für Vergleiche im selben Aufbau.
 
 > **Empfohlener Aufbau: Kosinus-Korrektor *und* Kalibrierung.**
 > Wir empfehlen ausdrücklich das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH vor der Frontkamera. **Auch der Kosinus-Korrektor muss in der App kalibriert werden** — einmalig gegen ein Referenz-PAR-Meter. Beides ergänzt sich, keins ersetzt das andere: Der Korrektor sorgt dafür, dass das Licht *aus allen Richtungen richtig gewichtet* wird; die Kalibrierung legt die *absolute Skala* fest. Papier ist nur ein Notbehelf zum Ausprobieren.
@@ -50,12 +50,12 @@ Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem d
 
 ## Was drinsteckt
 
-- **Exakte sRGB-Linearisierung** (statt γ≈2.2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken
-- **Lichtquellen-Profile** (Sonnenlicht, weiße LED, Blurple-Panel, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit. Auto-Erkennung nur für die drei Klassen, die sich in der RGB-Chromatizität belastbar trennen lassen (Sonnenlicht, HPS, Leuchtstoff) — der Rest ist manuell wählbar. **Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED“**: ihr 660-nm-Rot-Boost ist für eine RGB-Kamera unsichtbar (V(λ) ≈ 0,06 bei 660 nm gegen ≈ 0,50 bei 610 nm) und ohne Kalibrierung nicht erfassbar. Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
+- **sRGB-Linearisierung mit der exakten Kennlinie** (IEC 61966-2-1 statt γ≈2,2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken. Exakt ist dabei die *Umkehrung der sRGB-Kurve* — nicht zwingend die Linearität der Pixel: Handys legen Tonkurven, HDR-Effekte und Rauschfilter über das Bild, bevor die App es sieht. Was davon übrig bleibt, fängt die Kalibrierung auf; die Zwei-Punkt-Kalibrierung in erster Näherung auch über den Helligkeitsbereich
+- **Lichtquellen-Profile** (Sonnenlicht, weiße LED, Blurple-Panel, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit. Auto-Erkennung nur für die drei Klassen, die sich in der RGB-Chromatizität belastbar trennen lassen (Sonnenlicht, HPS, Leuchtstoff) — der Rest ist manuell wählbar. **Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED“**: ihren 660-nm-Rot-Boost bewertet die Kamera im Verhältnis zu seinen Photonen **deutlich zu schwach**. Unsichtbar ist er nicht — der Rotkanal registriert 660 nm —, aber der Infrarot-Sperrfilter vor dem Sensor dämpft dort bereits, und die Bildverarbeitung zielt auf augenähnliche Farben. Zur Größenordnung: Das *Auge* ist bei 660 nm rund achtmal unempfindlicher als bei 610 nm (V(λ) ≈ 0,06 gegen ≈ 0,50); die Kurve der Kamera ist das nicht, sie ist gerätespezifisch. Ohne Kalibrierung fällt der Wert unter solchen Lampen deshalb zu niedrig aus. Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
 - **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) als Güte-Anzeige. Der **Kalman-Halt** läuft bewusst auf einem engeren Kriterium (`Q_clip × Q_uniformity < 0.35`): nur wenn der *Frame die Szene nicht abbildet* — übersteuert oder ungleich ausgeleuchtet — wird der letzte Wert gehalten. Wenig Signal und hohe zeitliche Streuung sind *Messergebnisse*, keine Haltegründe: wird es dunkel, läuft die Anzeige gegen 0, statt einzufrieren.
 
   Dazu gehört eine zweite Bedingung, ohne die genau dieses Versprechen bricht: **die Uniformitäts-Achse zählt im Halte-Kriterium erst ab `yMean_lin ≥ 0.02`** (seit v3.4.8). `Q_uniformity` beruht auf `CV = std / zMean` — ein Nenner, der gegen 0 geht. Im Dunkeln wächst CV allein durch Rauschen, `Q_uniformity` fiele auf 0, und die Anzeige würde einfrieren: derselbe Fehler wie vorher, nur über eine andere Achse. Unterhalb der Schwelle gilt die Achse deshalb als unbeurteilbar und gatet nicht. In der *Anzeige* bleibt `Q_uniformity` unverändert ehrlich — eine im Dunkeln unbeurteilbare Ausleuchtung ist zu Recht ein Gütemangel
-- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %). Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
+- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2). Die Teilbeiträge sind **begründete Annahmen, nicht gegen Referenzmessungen geprüft** — `u_cal` (5 % kalibriert, 35 % unkalibriert) und die Profil-Unsicherheiten (5–10 %) sind gesetzt, nur `u_temporal` und `u_noise` kommen aus dem laufenden Bild. Deshalb nennt die App bewusst **keine Trefferquote**: Die bei k = 2 übliche Lesart „≈ 95 % der Messungen liegen im Bereich" gilt nur, wenn diese Annahmen stimmen. Nachzählen lässt sich das mit dem CSV-Export (Referenzwert, Rohwert, Kalibrierung, `uRel_k1`, `sessionId`), über viele *unabhängige* Aufbauten. Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
 
   | Lage | angezeigt (k = 2) |
   |---|---|
@@ -157,7 +157,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **111 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **112 Tests** gegen den extrahierten Pure-Pipeline-Block |
 | `tests/test_calib_storage.js` | Integrations-Harness, **37 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
 | `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
@@ -169,7 +169,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 111/111 erwartet (kein Browser nötig)
+node tests/test_pipeline.js         # 112/112 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 37/37 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
@@ -181,7 +181,7 @@ node tests/test_model.js            #  3/3  erwartet
 
 Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
 
-`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Abgrenzung (dunkle Szene und Lichtwechsel dürfen nicht halten), Flicker-Hysterese, Kalman-Reset beim Moduswechsel und den Unsicherheits-Boden (inkl. Abgleich gegen die Zahlen in diesem README).
+`test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Abgrenzung (dunkle Szene und Lichtwechsel dürfen nicht halten), Flicker-Hysterese, Kalman-Reset beim Moduswechsel und den Unsicherheits-Boden (inkl. Abgleich gegen die Zahlen in diesem README) sowie, dass die Versionsnummer in Titel, Kopfzeile, Service Worker und `package.json` übereinstimmt.
 
 `test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
 

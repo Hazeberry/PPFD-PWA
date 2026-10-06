@@ -446,6 +446,28 @@ t('Kein Messverhalten kann den Boden unterschreiten', () => {
   }
 });
 
+t('Versionsnummer ist ueberall dieselbe (Titel, Kopfzeile, Feature-Liste, Service Worker, package.json)', () => {
+  // v3.4.17 (Review): package.json stand noch auf 3.4.11, waehrend die App
+  // 3.4.16 war - beim Hochzaehlen nie mitgezogen. Am Service-Worker-Cache
+  // haengt dazu, ob installierte PWAs ueberhaupt aktualisieren.
+  // Nur gegen das index.html im Repo sinnvoll - mit Pfad-Argument (Vergleich
+  // gegen einen aelteren Stand) muesste er zwangslaeufig scheitern.
+  if (process.argv[2]) return;
+  const path = require('path'), root = path.join(__dirname, '..');
+  const v = (re, text, wo) => { const m = text.match(re); assert.ok(m, 'Version nicht gefunden: ' + wo); return m[1]; };
+  const SEM = '(\\d+\\.\\d+\\.\\d+)';
+  const gefunden = {
+    'Titel':         v(new RegExp('<title>PPFD Meter Pro v' + SEM + '</title>'), html, 'Titel'),
+    'Kopfzeile':     v(new RegExp('class="app-title">PPFD Meter Pro v' + SEM), html, 'Kopfzeile'),
+    'Feature-Liste': v(new RegExp('\\n\\s*v' + SEM + ' · Exakte'), html, 'Feature-Liste'),
+    'sw.js':         v(new RegExp("CACHE='ppfd-v" + SEM + "'"), fs.readFileSync(path.join(root, 'sw.js'), 'utf8'), 'sw.js'),
+    'package.json':  JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version,
+    'package-lock':  JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).version,
+  };
+  const werte = new Set(Object.values(gefunden));
+  assert.strictEqual(werte.size, 1, 'Versionen laufen auseinander: ' + JSON.stringify(gefunden));
+});
+
 t('README nennt denselben Boden, den der Code rechnet', () => {
   // Die alte Angabe "±10 % kalibriert" stammte aus der uCal-KONSTANTE, nicht
   // aus dem Budget - unkalibriert faellt das nicht auf (uCal dominiert dort
