@@ -1,6 +1,6 @@
 {
   "name": "ppfd-meter-pro",
-  "version": "3.4.11",
+  "version": "3.4.17",
   "private": true,
   "description": "Test-Werkzeug fuer PPFD Meter Pro. Die App selbst (index.html) hat KEINE Abhaengigkeiten und braucht keinen Build-Step - diese Datei existiert ausschliesslich fuer die Property-Tests.",
   "scripts": {
