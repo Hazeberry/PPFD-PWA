@@ -24,7 +24,9 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 
 - **Exakte sRGB-Linearisierung** (statt γ≈2.2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken
 - **Lichtquellen-Profile** (Sonnenlicht, weiße LED, Blurple-Panel, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit. Auto-Erkennung nur für die drei Klassen, die sich in der RGB-Chromatizität belastbar trennen lassen (Sonnenlicht, HPS, Leuchtstoff) — der Rest ist manuell wählbar. **Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED“**: ihr 660-nm-Rot-Boost ist für eine RGB-Kamera unsichtbar (V(λ) ≈ 0,06 bei 660 nm gegen ≈ 0,50 bei 610 nm) und ohne Kalibrierung nicht erfassbar. Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
-- **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) als Güte-Anzeige. Der **Kalman-Halt** läuft bewusst auf einem engeren Kriterium (`Q_clip × Q_uniformity < 0.35`): nur wenn der *Frame die Szene nicht abbildet* — übersteuert oder ungleich ausgeleuchtet — wird der letzte Wert gehalten. Wenig Signal und hohe zeitliche Streuung sind *Messergebnisse*, keine Haltegründe: wird es dunkel, läuft die Anzeige gegen 0, statt einzufrieren
+- **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) als Güte-Anzeige. Der **Kalman-Halt** läuft bewusst auf einem engeren Kriterium (`Q_clip × Q_uniformity < 0.35`): nur wenn der *Frame die Szene nicht abbildet* — übersteuert oder ungleich ausgeleuchtet — wird der letzte Wert gehalten. Wenig Signal und hohe zeitliche Streuung sind *Messergebnisse*, keine Haltegründe: wird es dunkel, läuft die Anzeige gegen 0, statt einzufrieren.
+
+  Dazu gehört eine zweite Bedingung, ohne die genau dieses Versprechen bricht: **die Uniformitäts-Achse zählt im Halte-Kriterium erst ab `yMean_lin ≥ 0.02`** (seit v3.4.8). `Q_uniformity` beruht auf `CV = std / zMean` — ein Nenner, der gegen 0 geht. Im Dunkeln wächst CV allein durch Rauschen, `Q_uniformity` fiele auf 0, und die Anzeige würde einfrieren: derselbe Fehler wie vorher, nur über eine andere Achse. Unterhalb der Schwelle gilt die Achse deshalb als unbeurteilbar und gatet nicht. In der *Anzeige* bleibt `Q_uniformity` unverändert ehrlich — eine im Dunkeln unbeurteilbare Ausleuchtung ist zu Recht ein Gütemangel
 - **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2, ≈ 95 %). Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
 
   | Lage | angezeigt (k = 2) |
@@ -42,7 +44,7 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 
 ## Bekannte Grenzen
 
-Vier Punkte aus dem Code-Review, die bewusst offen sind — sie brauchen eine Produkt-/Anzeige-Entscheidung, keinen Bugfix. Wer die App ernsthaft benutzt, sollte sie kennen.
+Fünf Punkte aus dem Code-Review und aus Feldbeobachtungen. Keiner davon ist ein Rechenfehler — es sind Eigenschaften der Messkette, an denen eine Produkt- oder Anzeige-Entscheidung hängt. Wo seither nachgebessert wurde, steht es beim jeweiligen Punkt („seit v…"); offen bleibt dort jeweils die Entscheidung, nicht die Analyse. Wer die App ernsthaft benutzt, sollte alle fünf kennen.
 
 ### 1. Zwei-Punkt-Kalibrierung kann eine Null-Zone erzeugen
 
@@ -73,7 +75,34 @@ Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify
 
 **Erkennen:** Die Zeile *Debug: Exposure raw* zeigt bei manuellem Hardware-Modus `… Y=<Wert> …`. Liegt der weit außerhalb von 25–220, arbeitet der Sensor abseits seines Auslegungspunkts, unabhängig davon was Q sagt.
 
-### 4. Die angezeigte Unsicherheit hat einen Boden bei ±14 %
+### 4. Das Belichtungs-Zielband lässt Übersteuerung zu — und im Manuell-Modus wird nicht nachgeregelt
+
+Punkt 3 beschreibt den Fall *außerhalb* des Zielbands. Der gefährlichere ist der umgekehrte: **innerhalb** des Bands und trotzdem übersteuert.
+
+`targetBandMet` prüft nur den Bild-Mittelwert (`y >= 25 && y <= 220`). Ein Mittelwert von 208 gilt damit als gelungene Belichtung — bei realer Ausleuchtungs-Schieflage sättigt dort aber bereits ein erheblicher Teil der Pixel. Übersteuerte Pixel werden bei 255 gekappt, der gemessene Mittelwert fällt dadurch **zu niedrig** aus, und die Anzeige mit ihm. Die App meldet in dieser Lage keinen Belichtungsfehler, weil das Band ja erfüllt ist.
+
+Dazu kommt, dass der Belichtungs-Arbeitspunkt grob gestuft ist. Zwei Sitzungen auf derselben Szene, zwei Minuten auseinander:
+
+| | Trail | gelandet bei | Y | Anzeige |
+|---|---|---|---|---|
+| Lauf A | `40→160→40` | 40 → 0,004 s | 150,5 | **163** µmol |
+| Lauf B | `40→160` | 160 → 0,016 s | 208,5 | **45** µmol |
+
+Lauf B löste `Sensor dauerhaft übersteuert` aus — diese Meldung kommt erst nach 90 aufeinanderfolgenden Frames mit kritischem Clipping.
+
+Dass zwischen den beiden Arbeitspunkten nichts liegt, ist kein Zufall: die Tuning-Rampe verändert die Belichtungszeit ausschließlich in **Vierer-Schritten** (`req*4` bzw. `req/4`, begrenzt durch die Treiber-Range). Es gibt also keine Zwischenstufe, auf der die Belichtung hätte landen können — welchen der beiden Punkte man erwischt, kippt bei marginaler Szenenhelligkeit.
+
+Eigentlich sollte das egal sein: PPFD ist proportional zu `Y_linear / Belichtungszeit`, die Belichtung kürzt sich also heraus. Rechnet man beide Zeilen mit der exakten EOTF durch, bleibt nach dieser Normierung trotzdem ein Faktor ≈ 1,9 (angezeigt sind 3,6). Die Normierung kompensiert also nur die Hälfte; der Rest passt in Richtung und Größenordnung zum Clipping-Bias. Belastbar ist die Zahl nicht — das Debug-`Y` stammt aus dem Tuning-Moment, nicht aus dem Frame der Anzeige, und die Szene kann sich zwischen den Läufen geändert haben.
+
+**Im Hardware-Modus Manuell gibt es keine Gegenmaßnahme.** Bei anhaltendem Clipping fordert die App nur im Software-Gain-Modus eine EV-Korrektur an; sonst erscheint genau *ein* Hinweis, ein Flag rastet ein, und die Messung läuft mit übersteuertem Sensor weiter bis zum Neustart.
+
+**Erkennen:** Der rote Hinweis „Sensor dauerhaft übersteuert". Dazu die Zeile *Debug: Exposure raw* — steht dort `Y=` nahe 220, ist der Arbeitspunkt zu hell, auch wenn *Clipping: OK* gerade nichts meldet (die Statuszeile zeigt den aktuellen Frame, der Hinweis eine vergangene Serie).
+
+**Umgehen:** Diffusor verstärken oder Abstand zur Lampe vergrößern und die **Kamera neu starten** — erst der Neustart tunt die Belichtung neu. Eine Kalibrierung gilt streng genommen nur für den Arbeitspunkt, an dem sie erhoben wurde; landet eine spätere Sitzung auf der anderen Stufe, trägt sie diesen systematischen Versatz mit. Der CSV-Export führt `exposureTime` und seit v3.4.8 `sessionId` mit, sodass sich das an echten Daten nachmessen lässt.
+
+**Offen ist die Entscheidung**, nicht die Analyse: Obergrenze des Zielbands senken bzw. an den tatsächlichen Clipping-Anteil statt an den Mittelwert koppeln — und im Manuell-Modus bei anhaltendem Clipping entweder eine Stufe herunterregeln oder bewusst auf Auto-Belichtung zurückfallen. Das ist eine Messphilosophie-Frage.
+
+### 5. Die angezeigte Unsicherheit hat einen Boden bei ±14 %
 
 Auch bei perfekter Messung — kalibriert, Profil manuell gewählt, Gerät auf dem Stativ, hell ausgeleuchtet — geht die angezeigte Unsicherheit nicht unter **±14 %**. Das ist kein Einzelfall, sondern ein rechnerischer Boden:
 
@@ -138,8 +167,7 @@ Angesetzt ist es dort, wo in diesem Projekt real Fehler steckten: der **Kalibrie
 
 ## Entstehung & Credits
 
-Dieses Projekt wurde in Zusammenarbeit mit KI-Assistenten entwickelt — namentlich 
-**Claude (Anthropic)**. war an Code-Reviews, der stufenweisen Architektur (Messkorrektheit → Konfidenzschicht → Zwei-Punkt-Kalibrierung → PWA), Fehleranalysen und Fixes beteiligt; Richtung, Entscheidungen und Feldtests lagen beim Projektinhaber. Weitere Modelle (u. a. Gemini, GLM) lieferten Review-Perspektiven, die kritisch geprüft und teils übernommen wurden.
+Dieses Projekt wurde in Zusammenarbeit mit KI-Assistenten entwickelt — namentlich **Claude (Anthropic)**, beteiligt an Code-Reviews, der stufenweisen Architektur (Messkorrektheit → Konfidenzschicht → Zwei-Punkt-Kalibrierung → PWA), Fehleranalysen und Fixes; Richtung, Entscheidungen und Feldtests lagen beim Projektinhaber. Weitere Modelle (u. a. Gemini, GLM) lieferten Review-Perspektiven, die kritisch geprüft und teils übernommen wurden.
 
 ## Lizenz
 
