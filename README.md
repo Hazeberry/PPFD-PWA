@@ -39,7 +39,7 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 
   Der CSV-Export führt die Standardunsicherheit (k = 1) in der Spalte `uRel_k1`.
 - **Status-Checkliste** (✓/⚠ Übersteuerung, Gleichmäßigkeit, Signal, Stabilität) mit handlungsleitenden Hinweisen
-- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen unrepräsentative Frames, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, Watchdog-gehärteter Kamerastart, gegen Canvas-Fehler abgesicherte Messschleife, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
+- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen unrepräsentative Frames, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, stufenweises Herunterregeln bei dauerhaftem Übersteuern im Manuell-Modus, Watchdog-gehärteter Kamerastart, gegen Canvas-Fehler abgesicherte Messschleife, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
 - **PWA:** `manifest.json` + `sw.js` (cache-first, versionsierter Cache), Icons inkl. maskable
 
 ## Bekannte Grenzen
@@ -75,7 +75,7 @@ Das ist kein Widerspruch in sich: Wurde der manuelle Lock nachgewiesen (`(verify
 
 **Erkennen:** Die Zeile *Debug: Exposure raw* zeigt bei manuellem Hardware-Modus `… Y=<Wert> …`. Liegt der weit außerhalb von 25–220, arbeitet der Sensor abseits seines Auslegungspunkts, unabhängig davon was Q sagt.
 
-### 4. Das Belichtungs-Zielband lässt Übersteuerung zu — und im Manuell-Modus wird nicht nachgeregelt
+### 4. Das Belichtungs-Zielband lässt Übersteuerung zu
 
 Punkt 3 beschreibt den Fall *außerhalb* des Zielbands. Der gefährlichere ist der umgekehrte: **innerhalb** des Bands und trotzdem übersteuert.
 
@@ -94,13 +94,15 @@ Dass zwischen den beiden Arbeitspunkten nichts liegt, ist kein Zufall: die Tunin
 
 Eigentlich sollte das egal sein: PPFD ist proportional zu `Y_linear / Belichtungszeit`, die Belichtung kürzt sich also heraus. Rechnet man beide Zeilen mit der exakten EOTF durch, bleibt nach dieser Normierung trotzdem ein Faktor ≈ 1,9 (angezeigt sind 3,6). Die Normierung kompensiert also nur die Hälfte; der Rest passt in Richtung und Größenordnung zum Clipping-Bias. Belastbar ist die Zahl nicht — das Debug-`Y` stammt aus dem Tuning-Moment, nicht aus dem Frame der Anzeige, und die Szene kann sich zwischen den Läufen geändert haben.
 
-**Im Hardware-Modus Manuell gibt es keine Gegenmaßnahme.** Bei anhaltendem Clipping fordert die App nur im Software-Gain-Modus eine EV-Korrektur an; sonst erscheint genau *ein* Hinweis, ein Flag rastet ein, und die Messung läuft mit übersteuertem Sensor weiter bis zum Neustart.
+**Seit v3.4.14 regelt der Manuell-Modus nach.** Bis v3.4.13 gab es dort keine Gegenmaßnahme: die EV-Korrektur griff nur im Software-Gain-Modus, sonst erschien genau *ein* Hinweis, ein Flag rastete ein, und die Messung lief mit übersteuertem Sensor weiter bis zum Neustart. Jetzt wird nach 90 Frames kritischem Clipping die Belichtung um **eine Stufe gekürzt** — dieselbe Vierer-Stufe wie in der Tuning-Rampe, der Manuell-Modus bleibt. Hält das Clipping an, folgt nach weiteren 90 Frames die nächste Stufe. Erst wenn der Treiber am Minimum ist oder die Anforderung ignoriert, kommt der Hinweis auf Diffusor und Abstand; dann hilft nur noch Physik.
 
-**Erkennen:** Der rote Hinweis „Sensor dauerhaft übersteuert". Dazu die Zeile *Debug: Exposure raw* — steht dort `Y=` nahe 220, ist der Arbeitspunkt zu hell, auch wenn *Clipping: OK* gerade nichts meldet (die Statuszeile zeigt den aktuellen Frame, der Hinweis eine vergangene Serie).
+Bewusst **nicht** der Rückfall auf Auto-Belichtung: ein nachgewiesener manueller Lock ist die bessere Messkette (ruhigerer Kalman, kein Nachregeln durch die Kamera-Automatik), und das Projekt hält ihn auch sonst, statt zurückzufallen (Punkt 3). Während der Umstellung (~0,5 s) hält die Anzeige ihren letzten Wert, übernommen wird die vom Treiber *gemeldete* Belichtung, nicht die angeforderte, und der Belichtungs-Drift-Check setzt seine Baseline um — sonst hielte er die eigene Stufe für Drift und schaltete doch auf Auto.
 
-**Umgehen:** Diffusor verstärken oder Abstand zur Lampe vergrößern und die **Kamera neu starten** — erst der Neustart tunt die Belichtung neu. Eine Kalibrierung gilt streng genommen nur für den Arbeitspunkt, an dem sie erhoben wurde; landet eine spätere Sitzung auf der anderen Stufe, trägt sie diesen systematischen Versatz mit. Der CSV-Export führt `exposureTime` und seit v3.4.8 `sessionId` mit, sodass sich das an echten Daten nachmessen lässt.
+**Was bleibt:** Das Zielband selbst prüft weiter nur den Mittelwert. Eine Sitzung kann also nach wie vor übersteuert *landen*; sie korrigiert sich jetzt aber nach rund 1,5–3 s (90 Frames bei 60 bzw. 30 fps) selbst, statt bis zum Neustart falsch zu messen. Das Band zusätzlich an den Clipping-Anteil zu koppeln, würde schon das Landen verhindern — die naheliegende nächste Stufe, falls die Selbstkorrektur im Feld nicht reicht.
 
-**Offen ist die Entscheidung**, nicht die Analyse: Obergrenze des Zielbands senken bzw. an den tatsächlichen Clipping-Anteil statt an den Mittelwert koppeln — und im Manuell-Modus bei anhaltendem Clipping entweder eine Stufe herunterregeln oder bewusst auf Auto-Belichtung zurückfallen. Das ist eine Messphilosophie-Frage.
+**Erkennen:** Der Hinweis „Dauerhaft übersteuert – Belichtung eine Stufe kürzer (… → … ms)" und in der Zeile *Debug: Exposure raw* ein angehängtes `clip↓ …→…ms`. Kommt stattdessen „Sensor dauerhaft übersteuert – Diffusor verstärken …", ist die Software am Ende.
+
+**Umgehen** (nur noch im letzten Fall nötig): Diffusor verstärken oder Abstand zur Lampe vergrößern. Eine Kalibrierung gilt streng genommen nur für den Arbeitspunkt, an dem sie erhoben wurde; der CSV-Export führt `exposureTime` und `sessionId` mit, sodass sich ein Versatz zwischen Arbeitspunkten an echten Daten nachmessen lässt.
 
 ### 5. Die angezeigte Unsicherheit hat einen Boden bei ±14 %
 
@@ -127,7 +129,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
 | `tests/test_pipeline.js` | Node-Regressions-Harness, **111 Tests** gegen den extrahierten Pure-Pipeline-Block |
 | `tests/test_calib_storage.js` | Integrations-Harness, **37 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
-| `tests/test_exposure_budget.js` | **7 Tests** für das Zeitbudget von `tuneExposure` (simulierte Uhr) |
+| `tests/test_exposure_budget.js` | **20 Tests** für das Zeitbudget von `tuneExposure` und die Belichtungs-Stufe bei Übersteuerung (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
 | `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
@@ -139,7 +141,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 ```bash
 node tests/test_pipeline.js         # 111/111 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 37/37 erwartet
-node tests/test_exposure_budget.js  #  7/7  erwartet
+node tests/test_exposure_budget.js  # 20/20 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
@@ -153,7 +155,7 @@ Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:n
 
 `test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
 
-`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert.
+`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert. Seit v3.4.14 zusätzlich `stepDownExposureManual()`: dass Formel-Belichtung und Drift-Baseline auf den vom Treiber **gemeldeten** Wert nachziehen (sonst fiele die Anzeige um Faktor 4 bzw. schaltete der Drift-Check auf Auto zurück), dass ein ignorierender Treiber, das Treiber-Minimum, ein Stopp oder ein Auto-Rückfall während der Umstellung nichts anfassen — und, am Quelltext, dass Kalman und Drift-Check während der Umstellung pausieren.
 
 `test_sw_fallback.js` lädt `sw.js` in eine `ServiceWorkerGlobalScope`-Attrappe: die App-Shell darf nur bei Navigationen als Offline-Fallback kommen, ein fehlgeschlagenes Bild oder JSON bekommt einen echten Netzwerkfehler statt HTML.
 

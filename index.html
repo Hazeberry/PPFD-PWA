@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.13</title>
+<title>PPFD Meter Pro v3.4.14</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.13</span>
+  <span class="app-title">PPFD Meter Pro v3.4.14</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.13 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.14 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -211,6 +211,7 @@
     Zurücksetzen räumt alle Lichtprofile der Kamera (Aufbau-Wechsel)<br>
     Blurple-Profil nur noch manuell · moderne Weißlicht-Grow-LEDs über „Weiße LED“<br>
     Warnung außerhalb des kalibrierten Bereichs (inkl. Null-Zone)<br>
+    Dauerhaftes Übersteuern im Manuell-Modus: Belichtung stufenweise kürzer statt nur Hinweis<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -844,6 +845,9 @@ let exposureDriftStrikes=0,lastExposureCheckFrame=0,exposureLockBaseline=null;
 let lastSwPollFrame=0;
 const EXPOSURE_CHECK_INTERVAL=60,EXPOSURE_DRIFT_THRESHOLD=0.15,EXPOSURE_DRIFT_STRIKES_LIMIT=3;
 let clipCriticalFrames=0,clipEvApplied=false,clipHintShown=false;
+// v3.4.14: true, solange stepDownExposureManual() die Belichtung umstellt.
+// Haelt in der Zeit den Kalman an und setzt den Drift-Check aus (s. dort).
+let clipStepInProgress=false;
 // v3.4.6: Zaehler fuer AUFEINANDERFOLGENDE Fehlschlaege der Frame-Analyse.
 // 30 Frames sind bei 30-60fps rund eine halbe bis eine Sekunde - lang genug,
 // dass ein transient verlorener Canvas-Context sich erholen kann, kurz genug,
@@ -1698,7 +1702,7 @@ async function startCamera(){
     if(startAborted){abortCleanup();return;}
     blackFrameStage=0;blackFrameCount=0;exposureDriftStrikes=0;lastExposureCheckFrame=0;exposureLockBaseline=null;
     lastSwPollFrame=0;
-    clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;
+    clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;
     setStep('3/4 Belichtung einstellen...');
     hardwareSettings=await applyHardwareConstraints(activeStream);
     if(startAborted){abortCleanup();return;}
@@ -1756,7 +1760,7 @@ async function startCamera(){
 function stopCamera(){
   isMeasuring=false;
   releaseWakeLock();
-  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;
+  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;
   blackFrameCount=0;blackFrameStage=0;exposureDriftStrikes=0;lastExposureCheckFrame=0;exposureLockBaseline=null;
   lastSwPollFrame=0;
   if(animationFrameId){cancelAnimationFrame(animationFrameId);animationFrameId=null;}
@@ -1844,6 +1848,66 @@ async function applyAntiClippingEV(){
   }catch(e){console.warn('Anti-Clipping-EV fehlgeschlagen:',e);return false;}
 }
 
+// v3.4.14: Gegenstueck zu applyAntiClippingEV() fuer den Hardware-Modus
+// Manuell. Bisher gab es dort bei anhaltendem kritischem Clipping nur EINEN
+// Hinweis (clipHintShown rastet ein) - die Messung lief mit uebersteuertem
+// Sensor weiter bis zum Neustart, und gekappte Pixel druecken den Mittelwert:
+// die Anzeige faellt zu niedrig aus (README, "Bekannte Grenzen" Punkt 4).
+//
+// Bewusst Herunterregeln statt Rueckfall auf Auto-Belichtung: ein
+// nachgewiesener manueller Lock ist die bessere Messkette (kalman.r 2.5 statt
+// 8.0, kein Nachregeln durch die Kamera-AE), und das Projekt haelt ihn auch
+// sonst bewusst, statt zurueckzufallen (README Punkt 3). Die Stufe ist
+// dieselbe wie in der Tuning-Rampe (Faktor 4) - die Belichtung landet also auf
+// einem Punkt, den die Rampe selbst haette waehlen koennen.
+//
+// Drei Dinge muessen dabei stimmen, sonst ist der Fix schlimmer als der Fehler:
+// 1) Die Formel teilt durch hardwareSettings.exposureTime. Wird die Belichtung
+//    gekuerzt, ohne den Wert nachzuziehen, faellt die Anzeige um Faktor 4.
+// 2) Der Drift-Check vergleicht alle 60 Frames mit exposureLockBaseline. Eine
+//    absichtliche 4x-Stufe saehe er als 75 % Drift, zaehlte drei Strikes und
+//    schaltete auf Auto zurueck - der Fix unterliefe sich selbst. Deshalb wird
+//    die Baseline umgesetzt und der Check waehrend der Umstellung ausgesetzt.
+// 3) Waehrend der Settle-Zeit kommen Frames mit neuer Belichtung an, waehrend
+//    die Formel noch durch die alte teilt. Der Aufrufer haelt deshalb den
+//    Kalman an, solange clipStepInProgress gesetzt ist.
+// Uebernommen wird der vom Treiber GEMELDETE Wert, nicht der angeforderte -
+// Treiber quantisieren (A17-Fall). Hat sich nichts bewegt, gilt der Schritt
+// als gescheitert und der Aufrufer zeigt den bisherigen Hinweis.
+const CLIP_STEP_FACTOR=4;
+const CLIP_HINT_MSG='Sensor dauerhaft übersteuert – Diffusor verstärken (z. B. 2–3 Lagen 80 g/m²-Papier) oder Abstand zur Lampe erhöhen.';
+async function stepDownExposureManual(){
+  const stream=activeStream;
+  const track=stream?.getVideoTracks()[0];
+  if(!track) return {ok:false,reason:'no-track'};
+  let cap,cur;
+  try{cap=track.getCapabilities();cur=track.getSettings().exposureTime;}
+  catch(e){return {ok:false,reason:'unsupported'};}
+  const capMin=cap?.exposureTime?.min;
+  if(!Number.isFinite(cur)||cur<=0||!Number.isFinite(capMin)) return {ok:false,reason:'unsupported'};
+  const target=Math.max(cur/CLIP_STEP_FACTOR,capMin);
+  if(target>=cur*0.95) return {ok:false,reason:'at-min'};
+  try{await track.applyConstraints({advanced:[{exposureTime:target}]});}
+  catch(e){return {ok:false,reason:'rejected'};}
+  await new Promise(r=>setTimeout(r,VERIFY_SETTLE_MS));
+  // Gestoppt, neu gestartet oder inzwischen auf Auto gefallen: nichts anfassen,
+  // der Zustand gehoert dann einer anderen Messkette.
+  if(!isMeasuring||activeStream!==stream||!hardwareSettings?.constraintsApplied) return {ok:false,reason:'aborted'};
+  let live;
+  try{live=track.getSettings().exposureTime;}catch(e){live=undefined;}
+  // Mindestens die halbe Strecke muss zurueckgelegt sein, sonst hat der
+  // Treiber die Anforderung praktisch ignoriert.
+  if(!Number.isFinite(live)||live>(cur+target)/2) return {ok:false,reason:'no-effect'};
+  const liveSec=live*EXP_UNIT;
+  hardwareSettings.exposureTime=liveSec;
+  exposureLockBaseline=liveSec;exposureDriftStrikes=0;
+  // temporalStats haelt yMean_lin, das NICHT belichtungsnormiert ist - ein
+  // gemischter Puffer taeuschte Instabilitaet vor (vgl. v3.4.6). ppfdMedian
+  // haelt Werte aus der uebersteuerten Phase, die zu niedrig sind.
+  temporalStats.reset();ppfdMedian.reset();
+  return {ok:true,from:cur,to:live};
+}
+
 async function revertToAutoExposure(reason){
   try{
     const track=activeStream?.getVideoTracks()[0];
@@ -1851,7 +1915,7 @@ async function revertToAutoExposure(reason){
   }catch(e){console.warn('Auto-Revert fehlgeschlagen:',e);}
   if(hardwareSettings){hardwareSettings.constraintsApplied=false;hardwareSettings.fallbackMode=reason||'auto-revert';}
   useSoftwareGain=true;
-  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;
+  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;
   document.getElementById('gainControl').classList.add('visible');
   // v3.3.13 FIX (Review): Slider-Knopf mit dem tatsächlichen Gain
   // synchronisieren - der DOM-Wert konnte noch aus einer früheren Session
@@ -1971,7 +2035,11 @@ function processLoop(timestamp){
     }
   }else{blackFrameCount=0;}
 
-  if(hardwareSettings?.constraintsApplied && activeStream && (frameCount-lastExposureCheckFrame)>=EXPOSURE_CHECK_INTERVAL){
+  // v3.4.14: waehrend einer absichtlichen Belichtungs-Stufe aussetzen - der
+  // Check saehe die 4x-Aenderung als Drift und schaltete auf Auto zurueck.
+  // lastExposureCheckFrame bleibt dabei stehen, der Check laeuft also direkt
+  // nach der Umstellung gegen die neue Baseline.
+  if(hardwareSettings?.constraintsApplied && activeStream && !clipStepInProgress && (frameCount-lastExposureCheckFrame)>=EXPOSURE_CHECK_INTERVAL){
     lastExposureCheckFrame=frameCount;
     const track=activeStream.getVideoTracks()[0];
     if(track){
@@ -2041,16 +2109,44 @@ function processLoop(timestamp){
 
   if(clipStatus.level==='critical'){
     clipCriticalFrames++;
-    if(clipCriticalFrames>=CLIP_ESCALATE_FRAMES){
+    // v3.4.14: nicht eskalieren, waehrend eine Umstellung noch laeuft.
+    if(clipCriticalFrames>=CLIP_ESCALATE_FRAMES&&!clipStepInProgress){
       clipCriticalFrames=0;
       if(useSoftwareGain&&!clipEvApplied){
         clipEvApplied=true;
         applyAntiClippingEV().then(ok=>{
           if(ok) showError('Dauerhaft übersteuert – Belichtungskorrektur (EV) nach unten angefordert.');
         });
+      }else if(!useSoftwareGain&&hardwareSettings?.constraintsApplied){
+        // v3.4.14: Manuell-Modus regelt eine Stufe herunter (s.
+        // stepDownExposureManual). Haelt das Clipping danach weiter an,
+        // greift nach weiteren CLIP_ESCALATE_FRAMES die naechste Stufe; erst
+        // am Treiber-Minimum oder wenn der Treiber nicht mitgeht, kommt der
+        // Hinweis auf Diffusor/Abstand - dann hilft nur noch Physik.
+        const stream=activeStream;
+        clipStepInProgress=true;
+        // Das catch steht VOR dem then: wuerfe stepDownExposureManual()
+        // unerwartet, liefe sonst das then nie, clipStepInProgress bliebe
+        // true und der Kalman hielte fuer immer an - eingefrorene Anzeige.
+        stepDownExposureManual().catch(e=>{
+          console.warn('[PPFD] Belichtungs-Stufe fehlgeschlagen:',e);
+          return {ok:false,reason:'error'};
+        }).then(res=>{
+          if(activeStream!==stream) return; // Flag gehoert inzwischen einer neuen Sitzung
+          clipStepInProgress=false;
+          if(res.ok){
+            const ms=(u)=>{const v=u*EXP_UNIT*1000;return v<1?v.toFixed(2):v<10?v.toFixed(1):String(Math.round(v));};
+            showError('Dauerhaft übersteuert – Belichtung eine Stufe kürzer ('+ms(res.from)+' → '+ms(res.to)+' ms), Manuell-Modus bleibt.');
+            const dbg=document.getElementById('debugExpVal');
+            if(dbg) dbg.textContent+=' · clip↓ '+ms(res.from)+'→'+ms(res.to)+'ms';
+          }else if(res.reason!=='aborted'&&!clipHintShown){
+            clipHintShown=true;
+            showError(CLIP_HINT_MSG);
+          }
+        });
       }else if(!clipHintShown){
         clipHintShown=true;
-        showError('Sensor dauerhaft übersteuert – Diffusor verstärken (z. B. 2–3 Lagen 80 g/m²-Papier) oder Abstand zur Lampe erhöhen.');
+        showError(CLIP_HINT_MSG);
       }
     }
   }else{
@@ -2179,7 +2275,10 @@ function processLoop(timestamp){
   // Fenster beim Zurueckkommen nicht mit veralteten Werten startet.
   const medianPPFD=ppfdMedian.push(rawPPFD);
   const qGateOpen=!lastQuality||lastQuality.qGate>=Q_GATE_HOLD;
-  const holdKalman=isClipping||!qGateOpen;
+  // v3.4.14: Waehrend stepDownExposureManual() umstellt, kommen Frames mit
+  // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese
+  // Werte waeren um den Stufenfaktor falsch und duerfen nicht in den Kalman.
+  const holdKalman=isClipping||!qGateOpen||clipStepInProgress;
   const displayPPFD=tempStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
   const state=appFSM.update(tempStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
   flickerResultFresh=false; // verbraucht - bis zum naechsten 1-Hz-Block ruht der Flicker-Akkumulator
