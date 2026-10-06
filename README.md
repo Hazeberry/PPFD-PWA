@@ -4,6 +4,9 @@
 
 Die App verwandelt die Handykamera in ein PPFD-Messgerät (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel exakt (sRGB-EOTF nach IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet physikalisch auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte erweiterte Messunsicherheit (± %, k = 2)** aus.
 
+> **Empfohlener Aufbau: Kosinus-Korrektor *und* Kalibrierung.**
+> Wir empfehlen ausdrücklich das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH vor der Frontkamera. **Auch der Kosinus-Korrektor muss in der App kalibriert werden** — einmalig gegen ein Referenz-PAR-Meter. Beides ergänzt sich, keins ersetzt das andere: Der Korrektor sorgt dafür, dass das Licht *aus allen Richtungen richtig gewichtet* wird; die Kalibrierung legt die *absolute Skala* fest. Papier ist nur ein Notbehelf zum Ausprobieren.
+
 ## Live
 
 👉 **https://hazeberry.github.io/PPFD-PWA/** (HTTPS ist Kamera-Voraussetzung)
@@ -14,7 +17,7 @@ Auf dem Smartphone: Seite öffnen → Browser-Menü → **„Zum Startbildschirm
 
 1. **Diffusor:** Für belastbare Werte gehört ein echter **Kosinus-Korrektor** vor die Kamera — empfohlen ist das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH (Clip mit Gummidichtung vor der Frontkamera). **Papier ist nur ein Notbehelf** zum Ausprobieren: 2–3 Lagen weißes Kopierpapier (80 g/m²) auf die Linse legen.
 2. **Kamera aktivieren**, 300 Frames Warmup abwarten (Temperatur-Stabilisierung).
-3. **Kalibrieren** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
+3. **Kalibrieren — auch mit Kosinus-Korrektor, und zwar mit genau dem Diffusor, mit dem du misst** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Jeder Diffusor schwächt das Licht um einen eigenen Faktor, den die App nicht kennen kann; ohne Kalibrierung bleibt die angezeigte Unsicherheit deshalb bei rund ±72 % — mit Korrektor genauso wie mit Papier. Wechselst du den Diffusor (Papier ↔ Kosinus-Korrektor, andere Halterung), im Kalibrier-Dialog erst **Reset**, dann neu kalibrieren (siehe „Bekannte Grenzen", Punkt 2). Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
 
 Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pixelgenau pro Kamera.
 
@@ -34,7 +37,7 @@ Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem d
    | 45° | 71 % |
    | 60° | 50 % |
 
-3. **Kosinus-Korrektor statt Papier.** Damit die Anzeige beim Neigen dem Verlauf der Tabelle folgt, muss der Diffusor eine definierte Kosinus-Charakteristik haben — genau dafür ist der [Lightray-Kosinuskorrektor](https://lightray.io/de/diffuser/) gebaut. Papier hat keine: Die Handykamera sieht nur einen begrenzten Winkel und wird zum Bildrand hin dunkler, Papier gleicht das nur teilweise aus. **Wenn es vorerst Papier sein muss, dann 2–3 Lagen, nicht eine** — durch ein einzelnes Blatt scheint die Lampe als heller Fleck durch, der Wert schwankt je nachdem, wo im Bild er landet, und fällt beim Kippen viel steiler ab als in der Tabelle. Mit Papier gemessene Werte sind gut für Vergleiche im selben Aufbau, für absolute Angaben aber nur grob.
+3. **Kosinus-Korrektor statt Papier.** Damit die Anzeige beim Neigen dem Verlauf der Tabelle folgt, muss der Diffusor eine definierte Kosinus-Charakteristik haben — genau dafür ist der [Lightray-Kosinuskorrektor](https://lightray.io/de/diffuser/) gebaut. Papier hat keine: Die Handykamera sieht nur einen begrenzten Winkel und wird zum Bildrand hin dunkler, Papier gleicht das nur teilweise aus. **Wenn es vorerst Papier sein muss, dann 2–3 Lagen, nicht eine** — durch ein einzelnes Blatt scheint die Lampe als heller Fleck durch, der Wert schwankt je nachdem, wo im Bild er landet, und fällt beim Kippen viel steiler ab als in der Tabelle. Mit Papier gemessene Werte sind gut für Vergleiche im selben Aufbau, für absolute Angaben aber nur grob. **Und auch mit Kosinus-Korrektor gilt: erst nach der Kalibrierung stimmt die Skala** (Bedienung, Schritt 3).
 4. **Lichtquelle manuell wählen.** Die Auto-Erkennung kennt nur Sonnenlicht, HPS und Leuchtstoff — eine weiße LED-Lampe zeigt sie als „Sonnenlicht" an. Der Faktor ist zufällig derselbe, die ausgewiesene Unsicherheit aber höher. Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED".
 5. **Stillhalten, bis die Messqualität grün ist.** Die Anzeige wird geglättet und braucht nach jeder Bewegung einige Sekunden. Flackert die Lampe (*FLICKER_WARN*), schwankt der Wert stärker — länger halten.
 6. **Jedes Mal gleich messen.** Gleiche Höhe, gleiche Stelle, gleiches Papier.
@@ -125,9 +128,9 @@ Bewusst **nicht** der Rückfall auf Auto-Belichtung: ein nachgewiesener manuelle
 
 **Was bleibt:** Das Zielband selbst prüft weiter nur den Mittelwert. Eine Sitzung kann also nach wie vor übersteuert *landen*; sie korrigiert sich jetzt aber nach rund 1,5–3 s (90 Frames bei 60 bzw. 30 fps) selbst, statt bis zum Neustart falsch zu messen. Das Band zusätzlich an den Clipping-Anteil zu koppeln, würde schon das Landen verhindern — die naheliegende nächste Stufe, falls die Selbstkorrektur im Feld nicht reicht.
 
-**Erkennen:** Der Hinweis „Dauerhaft übersteuert – Belichtung eine Stufe kürzer (… → … ms)" und in der Zeile *Debug: Exposure raw* ein angehängtes `clip↓ …→…ms`. Kommt stattdessen „Sensor dauerhaft übersteuert – Diffusor verstärken …", ist die Software am Ende.
+**Erkennen:** Der Hinweis „Dauerhaft übersteuert – Belichtung eine Stufe kürzer (… → … ms)" und in der Zeile *Debug: Exposure raw* ein angehängtes `clip↓ …→…ms`. Kommt stattdessen „Sensor dauerhaft übersteuert – Abstand zur Lampe erhöhen oder Diffusor prüfen …", ist die Software am Ende.
 
-**Umgehen** (nur noch im letzten Fall nötig): Diffusor verstärken oder Abstand zur Lampe vergrößern. Eine Kalibrierung gilt streng genommen nur für den Arbeitspunkt, an dem sie erhoben wurde; der CSV-Export führt `exposureTime` und `sessionId` mit, sodass sich ein Versatz zwischen Arbeitspunkten an echten Daten nachmessen lässt.
+**Umgehen** (nur noch im letzten Fall nötig): Abstand zur Lampe vergrößern bzw. den Diffusor prüfen — mit Papier notfalls eine Lage mehr; nach jedem Diffusor-Wechsel neu kalibrieren. Eine Kalibrierung gilt streng genommen nur für den Arbeitspunkt, an dem sie erhoben wurde; der CSV-Export führt `exposureTime` und `sessionId` mit, sodass sich ein Versatz zwischen Arbeitspunkten an echten Daten nachmessen lässt.
 
 ### 5. Die angezeigte Unsicherheit hat einen Boden bei ±14 %
 

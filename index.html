@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.14</title>
+<title>PPFD Meter Pro v3.4.15</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.14</span>
+  <span class="app-title">PPFD Meter Pro v3.4.15</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -187,7 +187,7 @@
     </div>
     <div class="calib-input-group" style="margin-bottom:10px">
       <label>Notiz (optional)</label>
-      <input type="text" id="trainNote" placeholder="z.B. mit Diffusor, bewölkt">
+      <input type="text" id="trainNote" placeholder="z.B. Kosinus-Korrektor, 30 cm unter Lampe">
     </div>
     <button class="calib-btn" style="border-color:var(--green);color:var(--green);margin-top:0" onclick="saveTrainPoint()">💾 Datenpunkt speichern (<span id="trainCount">0</span>)</button>
     <div style="display:flex;gap:8px;margin-top:8px">
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.14 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.15 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -212,6 +212,7 @@
     Blurple-Profil nur noch manuell · moderne Weißlicht-Grow-LEDs über „Weiße LED“<br>
     Warnung außerhalb des kalibrierten Bereichs (inkl. Null-Zone)<br>
     Dauerhaftes Übersteuern im Manuell-Modus: Belichtung stufenweise kürzer statt nur Hinweis<br>
+    Kosinus-Korrektor als Empfehlung, Kalibrier-Hinweis zum Diffusor-Wechsel<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -228,7 +229,7 @@
 <div class="modal-overlay" id="calibModal">
   <div class="modal">
     <h3>🔧 PPFD-Kalibrierung</h3>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">Referenz-PAR-Meter daneben halten und Wert eingeben um den Spektral-Faktor zu justieren. <strong>Optional:</strong> zweiten Punkt bei deutlich anderer Helligkeit setzen (Zwei-Punkt-Kalibrierung mit Offset, kompensiert Sensor-Nichtlinearität).</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">Referenz-PAR-Meter daneben halten und Wert eingeben um den Spektral-Faktor zu justieren. <strong>Optional:</strong> zweiten Punkt bei deutlich anderer Helligkeit setzen (Zwei-Punkt-Kalibrierung mit Offset, kompensiert Sensor-Nichtlinearität).<br><br><strong>Mit genau dem Diffusor kalibrieren, mit dem du misst</strong> – empfohlen ist ein Kosinus-Korrektor, und auch der muss kalibriert werden. Nach einem Wechsel (Papier ↔ Kosinus-Korrektor, andere Halterung) erst <strong>Reset</strong>, dann neu kalibrieren.</p>
     <div class="calib-input-group">
       <label>Referenz-PPFD (µmol·m⁻²·s⁻¹)</label>
       <input type="number" id="refPPFD" placeholder="z.B. 450" step="1">
@@ -956,7 +957,7 @@ const ppfdMedian=new RollingMedian(MEDIAN_WINDOW);
 let lastQuality=null;
 let lastUncertainty=null;
 const Q_STATUS_LABELS={
-  clip:{ok:'✓ Belichtung',warn:'⚠ Teilsättigung – Diffusor verstärken oder Abstand erhöhen'},
+  clip:{ok:'✓ Belichtung',warn:'⚠ Teilsättigung – Abstand erhöhen oder Diffusor prüfen'},
   uniformity:{ok:'✓ Homogenität',warn:'⚠ Ungleichmäßige Ausleuchtung – Gerät gerader ausrichten'},
   signal:{ok:'✓ Signalstärke',warn:'⚠ Schwaches Signal – Messung rauschbehaftet'},
   stability:{ok:'✓ Stabilität',warn:'⚠ Instabil – Gerät und Quelle stillhalten'}
@@ -1449,7 +1450,7 @@ function applyCalibration(){
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
-  if(lastFrameSnapshot?.clipLevel==='critical'){showError('Frame ist übersteuert – Kalibrierung unbrauchbar. Diffusor verstärken oder Abstand zur Lampe erhöhen.');return;}
+  if(lastFrameSnapshot?.clipLevel==='critical'){showError('Frame ist übersteuert – Kalibrierung unbrauchbar. Abstand zur Lampe erhöhen oder Diffusor prüfen.');return;}
   if(currentSignalLevel==='critical'){showError('Signal zu schwach zum Kalibrieren (Rauschen dominiert). Unter hellem Licht kalibrieren.');return;}
   // v3.4.0: Referenzpunkt hinzufügen (1. Punkt => reine Steigung wie bisher,
   // 2. Punkt => affine Korrektur slope*raw+offset). Der neue Punkt ersetzt
@@ -1875,7 +1876,9 @@ async function applyAntiClippingEV(){
 // Treiber quantisieren (A17-Fall). Hat sich nichts bewegt, gilt der Schritt
 // als gescheitert und der Aufrufer zeigt den bisherigen Hinweis.
 const CLIP_STEP_FACTOR=4;
-const CLIP_HINT_MSG='Sensor dauerhaft übersteuert – Diffusor verstärken (z. B. 2–3 Lagen 80 g/m²-Papier) oder Abstand zur Lampe erhöhen.';
+// v3.4.15: Kosinus-Korrektor ist die Empfehlung (README), Papier nur
+// Notbehelf - "Diffusor verstaerken" passte nur auf Papier.
+const CLIP_HINT_MSG='Sensor dauerhaft übersteuert – Abstand zur Lampe erhöhen oder Diffusor prüfen (empfohlen: Kosinus-Korrektor; Notbehelf: 2–3 Lagen Papier).';
 async function stepDownExposureManual(){
   const stream=activeStream;
   const track=stream?.getVideoTracks()[0];
