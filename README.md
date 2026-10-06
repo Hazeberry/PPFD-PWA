@@ -12,7 +12,7 @@ Auf dem Smartphone: Seite öffnen → Browser-Menü → **„Zum Startbildschirm
 
 ## Bedienung in 3 Schritten
 
-1. **Diffusor:** Empfohlen ist ein echter **Kosinus-Korrektor** wie der **Lightray Diffuser & Cosine Corrector** (Clip-On vor der Frontkamera). DIY-Alternative: 2–3 Lagen weißes Kopierpapier (80 g/m²) auf die Linse legen.
+1. **Diffusor:** Für belastbare Werte gehört ein echter **Kosinus-Korrektor** vor die Kamera — empfohlen ist das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH (Clip mit Gummidichtung vor der Frontkamera). **Papier ist nur ein Notbehelf** zum Ausprobieren: 2–3 Lagen weißes Kopierpapier (80 g/m²) auf die Linse legen.
 2. **Kamera aktivieren**, 300 Frames Warmup abwarten (Temperatur-Stabilisierung).
 3. **Kalibrieren** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
 
@@ -34,7 +34,7 @@ Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem d
    | 45° | 71 % |
    | 60° | 50 % |
 
-3. **2–3 Lagen Papier, nicht eine.** Durch ein einzelnes Blatt scheint die Lampe als heller Fleck durch. Je nachdem, wo im Bild er landet, schwankt der Wert, und beim Kippen fällt er viel steiler ab als in der Tabelle oben. Ein Kosinus-Korrektor löst genau das (siehe oben).
+3. **Kosinus-Korrektor statt Papier.** Damit die Anzeige beim Neigen dem Verlauf der Tabelle folgt, muss der Diffusor eine definierte Kosinus-Charakteristik haben — genau dafür ist der [Lightray-Kosinuskorrektor](https://lightray.io/de/diffuser/) gebaut. Papier hat keine: Die Handykamera sieht nur einen begrenzten Winkel und wird zum Bildrand hin dunkler, Papier gleicht das nur teilweise aus. **Wenn es vorerst Papier sein muss, dann 2–3 Lagen, nicht eine** — durch ein einzelnes Blatt scheint die Lampe als heller Fleck durch, der Wert schwankt je nachdem, wo im Bild er landet, und fällt beim Kippen viel steiler ab als in der Tabelle. Mit Papier gemessene Werte sind gut für Vergleiche im selben Aufbau, für absolute Angaben aber nur grob.
 4. **Lichtquelle manuell wählen.** Die Auto-Erkennung kennt nur Sonnenlicht, HPS und Leuchtstoff — eine weiße LED-Lampe zeigt sie als „Sonnenlicht" an. Der Faktor ist zufällig derselbe, die ausgewiesene Unsicherheit aber höher. Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED".
 5. **Stillhalten, bis die Messqualität grün ist.** Die Anzeige wird geglättet und braucht nach jeder Bewegung einige Sekunden. Flackert die Lampe (*FLICKER_WARN*), schwankt der Wert stärker — länger halten.
 6. **Jedes Mal gleich messen.** Gleiche Höhe, gleiche Stelle, gleiches Papier.
