@@ -128,6 +128,8 @@ Bewusst **nicht** der Rückfall auf Auto-Belichtung: ein nachgewiesener manuelle
 
 **Was bleibt:** Das Zielband selbst prüft weiter nur den Mittelwert. Eine Sitzung kann also nach wie vor übersteuert *landen*; sie korrigiert sich jetzt aber nach rund 1,5–3 s (90 Frames bei 60 bzw. 30 fps) selbst, statt bis zum Neustart falsch zu messen. Das Band zusätzlich an den Clipping-Anteil zu koppeln, würde schon das Landen verhindern — die naheliegende nächste Stufe, falls die Selbstkorrektur im Feld nicht reicht.
 
+**Nach einer Stufe wird nie wieder hochgeregelt (seit v3.4.16 mit Hinweis).** Gehst du danach an eine deutlich dunklere Stelle, bleibt die Belichtung kurz, das Signal wird schwach und der Wert rauschig — im Mittel weiter richtig, weil die Formel die Belichtung herausrechnet. Bleibt das Signal rund 3 s (180 Frames) am Stück schwach, meldet die App „Signal schwach – die Belichtung wurde vorhin wegen Übersteuerung gekürzt …" mit dem Rat, die Kamera neu zu starten; der Neustart stellt die Belichtung neu ein. Einmal pro Stufe, kurzes Vorbeischwenken an einer dunklen Stelle löst nichts aus. Bewusst **kein automatisches Hochregeln**: das könnte pendeln (hoch → übersteuert → runter → …), weil ein dunkler Mittelwert einzelne gesättigte Pixel nicht ausschließt — etwa die Lampe als heller Fleck hinter einer einzelnen Lage Papier. Kommt der Hinweis direkt nach der Korrektur, ohne dass du dich bewegt hast, ist das Bild zu ungleichmäßig für eine einzige Belichtung: Abstand erhöhen oder den Kosinus-Korrektor verwenden.
+
 **Erkennen:** Der Hinweis „Dauerhaft übersteuert – Belichtung eine Stufe kürzer (… → … ms)" und in der Zeile *Debug: Exposure raw* ein angehängtes `clip↓ …→…ms`. Kommt stattdessen „Sensor dauerhaft übersteuert – Abstand zur Lampe erhöhen oder Diffusor prüfen …", ist die Software am Ende.
 
 **Umgehen** (nur noch im letzten Fall nötig): Abstand zur Lampe vergrößern bzw. den Diffusor prüfen — mit Papier notfalls eine Lage mehr; nach jedem Diffusor-Wechsel neu kalibrieren. Eine Kalibrierung gilt streng genommen nur für den Arbeitspunkt, an dem sie erhoben wurde; der CSV-Export führt `exposureTime` und `sessionId` mit, sodass sich ein Versatz zwischen Arbeitspunkten an echten Daten nachmessen lässt.
@@ -157,7 +159,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
 | `tests/test_pipeline.js` | Node-Regressions-Harness, **111 Tests** gegen den extrahierten Pure-Pipeline-Block |
 | `tests/test_calib_storage.js` | Integrations-Harness, **37 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
-| `tests/test_exposure_budget.js` | **20 Tests** für das Zeitbudget von `tuneExposure` und die Belichtungs-Stufe bei Übersteuerung (simulierte Uhr) |
+| `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
 | `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
@@ -169,7 +171,7 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 ```bash
 node tests/test_pipeline.js         # 111/111 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 37/37 erwartet
-node tests/test_exposure_budget.js  # 20/20 erwartet
+node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
@@ -183,7 +185,7 @@ Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:n
 
 `test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
 
-`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert. Seit v3.4.14 zusätzlich `stepDownExposureManual()`: dass Formel-Belichtung und Drift-Baseline auf den vom Treiber **gemeldeten** Wert nachziehen (sonst fiele die Anzeige um Faktor 4 bzw. schaltete der Drift-Check auf Auto zurück), dass ein ignorierender Treiber, das Treiber-Minimum, ein Stopp oder ein Auto-Rückfall während der Umstellung nichts anfassen — und, am Quelltext, dass Kalman und Drift-Check während der Umstellung pausieren.
+`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert. Seit v3.4.14 zusätzlich `stepDownExposureManual()`: dass Formel-Belichtung und Drift-Baseline auf den vom Treiber **gemeldeten** Wert nachziehen (sonst fiele die Anzeige um Faktor 4 bzw. schaltete der Drift-Check auf Auto zurück), dass ein ignorierender Treiber, das Treiber-Minimum, ein Stopp oder ein Auto-Rückfall während der Umstellung nichts anfassen — und, am Quelltext, dass Kalman und Drift-Check während der Umstellung pausieren. Seit v3.4.16 außerdem der Neustart-Hinweis: nie ohne vorherige erfolgreiche Stufe, erst nach der vollen Frame-Zahl, Rücksetzen durch einen guten Frame, einmal pro Stufe — und am Quelltext, dass nirgends automatisch hochgeregelt wird.
 
 `test_sw_fallback.js` lädt `sw.js` in eine `ServiceWorkerGlobalScope`-Attrappe: die App-Shell darf nur bei Navigationen als Offline-Fallback kommen, ein fehlgeschlagenes Bild oder JSON bekommt einen echten Netzwerkfehler statt HTML.
 

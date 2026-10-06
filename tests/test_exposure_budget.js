@@ -40,6 +40,11 @@ function makeApp(){
     src+`;return {tuneExposure,VERIFY_COST_MS,VERIFY_SETTLE_MS,PWM_SAMPLE_GAP_MS,PWM_SAMPLE_EXTRA,
       stepDownExposureManual:typeof stepDownExposureManual==='function'?stepDownExposureManual:undefined,
       CLIP_STEP_FACTOR:typeof CLIP_STEP_FACTOR!=='undefined'?CLIP_STEP_FACTOR:undefined,
+      lowSignalAfterStep:typeof lowSignalAfterStep==='function'?lowSignalAfterStep:undefined,
+      LOW_AFTER_STEP_FRAMES:typeof LOW_AFTER_STEP_FRAMES!=='undefined'?LOW_AFTER_STEP_FRAMES:undefined,
+      get clipSteppedDown(){return clipSteppedDown;},set clipSteppedDown(v){clipSteppedDown=v;},
+      get lowAfterStepHintShown(){return lowAfterStepHintShown;},
+      set lowAfterStepFrames(v){lowAfterStepFrames=v;},
       EXP_UNIT,EXPOSURE_DRIFT_THRESHOLD,temporalStats,ppfdMedian,
       set activeStream(v){activeStream=v;},
       get isMeasuring(){return isMeasuring;},set isMeasuring(v){isMeasuring=v;},
@@ -281,6 +286,77 @@ await t('Verdrahtung: Manuell-Zweig regelt herunter, catch steht VOR then', ()=>
   const i=src.indexOf('stepDownExposureManual().catch(');
   assert.ok(i>0,'Manuell-Zweig ruft stepDownExposureManual nicht mit catch auf - ein Wurf liesse das Flag haengen');
   assert.ok(src.indexOf('.then(res=>',i)>i,'then fehlt nach dem catch');
+});
+
+console.log('== Schwaches Signal nach einer Clip-Stufe: Neustart-Hinweis (v3.4.16) ==');
+
+// Zaehlt Frames mit gegebenem Signal-Level, bis der Hinweis kommt (oder nicht).
+function frames(api,level,n){let fired=0;for(let i=0;i<n;i++) if(api.lowSignalAfterStep(level)) fired++;return fired;}
+
+await t('Ohne vorherige Clip-Stufe: nie ein Hinweis, egal wie dunkel', async()=>{
+  const {api}=manualSession();
+  assert.strictEqual(api.clipSteppedDown,false,'Testaufbau');
+  assert.strictEqual(frames(api,'critical',10*api.LOW_AFTER_STEP_FRAMES),0,
+    'Hinweis ohne Stufe - dunkle Szenen sind normale Messungen, kein Neustart-Grund');
+});
+
+await t('Erfolgreiche Stufe schaltet scharf, gescheiterte nicht', async()=>{
+  const ok=manualSession();
+  assert.ok((await ok.api.stepDownExposureManual()).ok);
+  assert.strictEqual(ok.api.clipSteppedDown,true,'erfolgreiche Stufe hat nicht scharf geschaltet');
+  const nix=manualSession({trackOpts:{quantize:true}});
+  assert.strictEqual((await nix.api.stepDownExposureManual()).reason,'no-effect');
+  assert.strictEqual(nix.api.clipSteppedDown,false,'Belichtung unveraendert - kein Grund fuer den Hinweis');
+});
+
+await t('Hinweis genau nach LOW_AFTER_STEP_FRAMES schwachen Frames, nicht frueher', async()=>{
+  const {api}=manualSession();
+  await api.stepDownExposureManual();
+  const N=api.LOW_AFTER_STEP_FRAMES;
+  assert.ok(N>=90,'Schwelle muss laenger sein als die Clip-Eskalation, ist '+N);
+  assert.strictEqual(frames(api,'low',N-1),0,'zu frueh');
+  assert.strictEqual(frames(api,'low',1),1,'beim N-ten Frame muss er kommen');
+});
+
+await t('Ein guter Frame setzt zurueck: kurzes Vorbeischwenken loest nichts aus', async()=>{
+  const {api}=manualSession();
+  await api.stepDownExposureManual();
+  const N=api.LOW_AFTER_STEP_FRAMES;
+  for(let r=0;r<5;r++){
+    assert.strictEqual(frames(api,'low',N-1),0,'Runde '+r);
+    assert.strictEqual(frames(api,'ok',1),0);
+  }
+  assert.strictEqual(api.lowAfterStepHintShown,false);
+});
+
+await t('Kritisch zaehlt wie schwach', async()=>{
+  const {api}=manualSession();
+  await api.stepDownExposureManual();
+  assert.strictEqual(frames(api,'critical',api.LOW_AFTER_STEP_FRAMES),1);
+});
+
+await t('Nur einmal pro Stufe - eine neue Stufe schaltet wieder scharf', async()=>{
+  const {api}=manualSession();
+  await api.stepDownExposureManual();               // 160 -> 40
+  const N=api.LOW_AFTER_STEP_FRAMES;
+  assert.strictEqual(frames(api,'low',N),1);
+  assert.strictEqual(frames(api,'low',10*N),0,'wiederholt sich - Hinweis-Spam');
+  await api.stepDownExposureManual();               // 40 -> 10
+  assert.strictEqual(frames(api,'low',N),1,'neue Stufe hat nicht neu scharf geschaltet');
+});
+
+await t('Verdrahtung: processLoop ruft den Check, alle drei Resets raeumen den Zustand', ()=>{
+  assert.ok(src.includes('if(lowSignalAfterStep(signalStatus.level)) showError(LOW_AFTER_STEP_MSG);'),
+    'processLoop ruft lowSignalAfterStep nicht auf');
+  const resets=src.split('clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;').length-1;
+  assert.strictEqual(resets,3,'Kamerastart, Stopp und Auto-Rueckfall muessen den Zustand raeumen, gefunden: '+resets);
+});
+
+await t('Verdrahtung: kein automatisches Hochregeln', ()=>{
+  // Bewusste Entscheidung (Pendel-Risiko, s. index.html bei lowSignalAfterStep).
+  // Taucht hier je ein req*CLIP_STEP_FACTOR auf, muss diese Abwaegung neu
+  // gefuehrt werden - der Test soll das sichtbar machen, nicht verbieten.
+  assert.ok(!/\*\s*CLIP_STEP_FACTOR/.test(src),'Belichtung wird irgendwo hochgeregelt');
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');

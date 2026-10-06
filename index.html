@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.15</title>
+<title>PPFD Meter Pro v3.4.16</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.15</span>
+  <span class="app-title">PPFD Meter Pro v3.4.16</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.15 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.16 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -213,6 +213,7 @@
     Warnung außerhalb des kalibrierten Bereichs (inkl. Null-Zone)<br>
     Dauerhaftes Übersteuern im Manuell-Modus: Belichtung stufenweise kürzer statt nur Hinweis<br>
     Kosinus-Korrektor als Empfehlung, Kalibrier-Hinweis zum Diffusor-Wechsel<br>
+    Neustart-Hinweis bei dauerhaft schwachem Signal nach einer Belichtungs-Stufe<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -849,6 +850,29 @@ let clipCriticalFrames=0,clipEvApplied=false,clipHintShown=false;
 // v3.4.14: true, solange stepDownExposureManual() die Belichtung umstellt.
 // Haelt in der Zeit den Kalman an und setzt den Drift-Check aus (s. dort).
 let clipStepInProgress=false;
+// v3.4.16: Nach einer Clip-Stufe bleibt die Belichtung kurz - es wird nie
+// wieder hochgeregelt. Geht man danach an eine deutlich dunklere Stelle, wird
+// das Signal schwach und der Wert rauschig (im Mittel weiter richtig, die
+// Formel rechnet die Belichtung heraus). Dann ein Hinweis auf den Neustart,
+// der die Belichtung sauber neu einstellt.
+// Bewusst KEIN automatisches Hochregeln: das kann pendeln (hoch ->
+// uebersteuert -> runter -> ...), weil ein dunkler Mittelwert einzelne
+// gesaettigte Pixel nicht ausschliesst - etwa die Lampe als heller Fleck
+// hinter einer einzelnen Lage Papier.
+// Scharf geschaltet NUR durch eine erfolgreiche Stufe (stepDownExposureManual),
+// einmal pro Stufe. 180 Frames (3 s bei 60 fps) sind bewusst laenger als die
+// 90 der Clip-Eskalation: kurzes Vorbeischwenken an einer dunklen Stelle soll
+// nichts ausloesen, ein einziger guter Frame setzt den Zaehler zurueck.
+let clipSteppedDown=false,lowAfterStepFrames=0,lowAfterStepHintShown=false;
+const LOW_AFTER_STEP_FRAMES=180;
+const LOW_AFTER_STEP_MSG='Signal schwach – die Belichtung wurde vorhin wegen Übersteuerung gekürzt. Für dunklere Stellen Kamera neu starten, dann wird sie neu eingestellt.';
+function lowSignalAfterStep(level){
+  if(!clipSteppedDown||lowAfterStepHintShown) return false;
+  if(level==='ok'){lowAfterStepFrames=0;return false;}
+  if(++lowAfterStepFrames<LOW_AFTER_STEP_FRAMES) return false;
+  lowAfterStepHintShown=true;
+  return true;
+}
 // v3.4.6: Zaehler fuer AUFEINANDERFOLGENDE Fehlschlaege der Frame-Analyse.
 // 30 Frames sind bei 30-60fps rund eine halbe bis eine Sekunde - lang genug,
 // dass ein transient verlorener Canvas-Context sich erholen kann, kurz genug,
@@ -1703,7 +1727,7 @@ async function startCamera(){
     if(startAborted){abortCleanup();return;}
     blackFrameStage=0;blackFrameCount=0;exposureDriftStrikes=0;lastExposureCheckFrame=0;exposureLockBaseline=null;
     lastSwPollFrame=0;
-    clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;
+    clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
     setStep('3/4 Belichtung einstellen...');
     hardwareSettings=await applyHardwareConstraints(activeStream);
     if(startAborted){abortCleanup();return;}
@@ -1761,7 +1785,7 @@ async function startCamera(){
 function stopCamera(){
   isMeasuring=false;
   releaseWakeLock();
-  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;
+  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
   blackFrameCount=0;blackFrameStage=0;exposureDriftStrikes=0;lastExposureCheckFrame=0;exposureLockBaseline=null;
   lastSwPollFrame=0;
   if(animationFrameId){cancelAnimationFrame(animationFrameId);animationFrameId=null;}
@@ -1908,6 +1932,9 @@ async function stepDownExposureManual(){
   // gemischter Puffer taeuschte Instabilitaet vor (vgl. v3.4.6). ppfdMedian
   // haelt Werte aus der uebersteuerten Phase, die zu niedrig sind.
   temporalStats.reset();ppfdMedian.reset();
+  // v3.4.16: Hinweis "Signal schwach nach Belichtungskorrektur" fuer diese
+  // Stufe scharf schalten (s. lowSignalAfterStep).
+  clipSteppedDown=true;lowAfterStepFrames=0;lowAfterStepHintShown=false;
   return {ok:true,from:cur,to:live};
 }
 
@@ -1918,7 +1945,7 @@ async function revertToAutoExposure(reason){
   }catch(e){console.warn('Auto-Revert fehlgeschlagen:',e);}
   if(hardwareSettings){hardwareSettings.constraintsApplied=false;hardwareSettings.fallbackMode=reason||'auto-revert';}
   useSoftwareGain=true;
-  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;
+  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
   document.getElementById('gainControl').classList.add('visible');
   // v3.3.13 FIX (Review): Slider-Knopf mit dem tatsächlichen Gain
   // synchronisieren - der DOM-Wert konnte noch aus einer früheren Session
@@ -2155,6 +2182,8 @@ function processLoop(timestamp){
   }else{
     clipCriticalFrames=0;
   }
+  // v3.4.16: dauerhaft schwaches Signal nach einer Clip-Stufe -> Neustart-Hinweis.
+  if(lowSignalAfterStep(signalStatus.level)) showError(LOW_AFTER_STEP_MSG);
 
   const tempStatus=tempCompensator.update();
   if(!tempStatus.isWarmedUp){
