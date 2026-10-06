@@ -20,6 +20,31 @@ Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pi
 
 **Warum Kosinus-Korrektor?** PPFD ist eine flächenbezogene Größe — die Sensorantwort muss dem Lambertschen Kosinusgesetz folgen. Papier streut und dämpft zwar, besitzt aber keine definierte Kosinus-Richtcharakteristik; die Winkelabhängigkeit bleibt unbestimmt und gerätespezifisch. Genau diese Eigenschaft beschreibt die Norm **ISO/CIE 19476** über den Güteindex **f₂** (directional response, Kosinusgesetz-Abweichung) — formal für Beleuchtungsstärke-/Leuchtdichtemesser, aber dasselbe Konzept, mit dem auch PAR-Sensoren ihre Kosinus-Korrektur spezifizieren.
 
+## So misst du richtig
+
+Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem daran, *wie* das Handy liegt. Haltung und Position verändern den Wert um Größenordnungen, mehr als alles andere.
+
+1. **Kamera im Licht starten.** Beim Start stellt die App die Belichtung ein. Ist die Kamera dabei abgedeckt oder zeigt nach unten, findet sie kein brauchbares Bild, fährt bis zur längsten Belichtung und fällt auf die Auto-Belichtung des Handys zurück. Erkennbar an *Hardware-Modus: Software (exposure-out-of-range)* und `→FALLBACK` in der Debug-Zeile. Dann einfach unter der Lampe neu starten — es soll **Manuell** dastehen: Nur dort kennt die App die Belichtungszeit selbst, statt sie vom Handy erfragen zu müssen.
+2. **Handy flach auf Höhe der Pflanzenspitzen, Frontkamera nach oben** — parallel zu der Fläche, die du messen willst. **Nicht auf die Lampe zielen.** PPFD ist eine flächenbezogene Größe; ein gekippter Sensor bekommt tatsächlich weniger Licht ab, auch ein echtes PAR-Meter zeigt dann weniger:
+
+   | Neigung zur Lampe | korrekter Messwert |
+   |---|---|
+   | 0° | 100 % |
+   | 30° | 87 % |
+   | 45° | 71 % |
+   | 60° | 50 % |
+
+3. **2–3 Lagen Papier, nicht eine.** Durch ein einzelnes Blatt scheint die Lampe als heller Fleck durch. Je nachdem, wo im Bild er landet, schwankt der Wert, und beim Kippen fällt er viel steiler ab als in der Tabelle oben. Ein Kosinus-Korrektor löst genau das (siehe oben).
+4. **Lichtquelle manuell wählen.** Die Auto-Erkennung kennt nur Sonnenlicht, HPS und Leuchtstoff — eine weiße LED-Lampe zeigt sie als „Sonnenlicht" an. Der Faktor ist zufällig derselbe, die ausgewiesene Unsicherheit aber höher. Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED".
+5. **Stillhalten, bis die Messqualität grün ist.** Die Anzeige wird geglättet und braucht nach jeder Bewegung einige Sekunden. Flackert die Lampe (*FLICKER_WARN*), schwankt der Wert stärker — länger halten.
+6. **Jedes Mal gleich messen.** Gleiche Höhe, gleiche Stelle, gleiches Papier.
+
+**Kontrollblick vor dem Ablesen:** *Hardware-Modus: Manuell* · *Clipping: OK* · *Signal: OK* · *Messqualität* grün (ab 85 %). Steht in der Debug-Zeile `clip↓ …`, hat die App eine Übersteuerung selbst korrigiert (siehe „Bekannte Grenzen", Punkt 4) — das ist in Ordnung.
+
+**Vergleichen ist genauer als die Zahl.** Ohne Kalibrierung zeigt die App rund ±72 %. Das ist fast vollständig ein *Skalenfehler*: Er bleibt gleich, solange Handy, Papier und Lampe gleich bleiben. Fragen wie „Ist es 20 cm tiefer doppelt so hell?" beantwortet die App deshalb deutlich genauer als die ±72 % vermuten lassen. Für belastbare absolute Werte einmal gegen ein Referenz-PAR-Meter kalibrieren.
+
+**Eigenen Aufbau prüfen (optional):** Lampe fest, Handy bei 0°, 30°, 45° und 60° Neigung jeweils stillhalten, Werte notieren und auf den 0°-Wert beziehen. Der Vergleich mit der Tabelle in Schritt 2 zeigt, wie weit dein Diffusor vom Kosinus-Ideal abweicht.
+
 ## Was drinsteckt
 
 - **Exakte sRGB-Linearisierung** (statt γ≈2.2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken
