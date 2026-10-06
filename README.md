@@ -55,7 +55,7 @@ Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem d
 - **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) als Güte-Anzeige. Der **Kalman-Halt** läuft bewusst auf einem engeren Kriterium (`Q_clip × Q_uniformity < 0.35`): nur wenn der *Frame die Szene nicht abbildet* — übersteuert oder ungleich ausgeleuchtet — wird der letzte Wert gehalten. Wenig Signal und hohe zeitliche Streuung sind *Messergebnisse*, keine Haltegründe: wird es dunkel, läuft die Anzeige gegen 0, statt einzufrieren.
 
   Dazu gehört eine zweite Bedingung, ohne die genau dieses Versprechen bricht: **die Uniformitäts-Achse zählt im Halte-Kriterium erst ab `yMean_lin ≥ 0.02`** (seit v3.4.8). `Q_uniformity` beruht auf `CV = std / zMean` — ein Nenner, der gegen 0 geht. Im Dunkeln wächst CV allein durch Rauschen, `Q_uniformity` fiele auf 0, und die Anzeige würde einfrieren: derselbe Fehler wie vorher, nur über eine andere Achse. Unterhalb der Schwelle gilt die Achse deshalb als unbeurteilbar und gatet nicht. In der *Anzeige* bleibt `Q_uniformity` unverändert ehrlich — eine im Dunkeln unbeurteilbare Ausleuchtung ist zu Recht ein Gütemangel
-- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2). Die Teilbeiträge sind **begründete Annahmen, nicht gegen Referenzmessungen geprüft** — `u_cal` (5 % kalibriert, 35 % unkalibriert) und die Profil-Unsicherheiten (5–10 %) sind gesetzt, nur `u_temporal` und `u_noise` kommen aus dem laufenden Bild. Deshalb nennt die App bewusst **keine Trefferquote**: Die bei k = 2 übliche Lesart „≈ 95 % der Messungen liegen im Bereich" gilt nur, wenn diese Annahmen stimmen. Nachzählen lässt sich das mit dem CSV-Export (Referenzwert, Rohwert, Kalibrierung, `uRel_k1`, `sessionId`), über viele *unabhängige* Aufbauten. Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
+- **Unsicherheitsbudget** u_rel = √(u_cal² + u_profile² + u_temporal² + u_noise²). Angezeigt wird die **erweiterte** Unsicherheit (k = 2). Die Teilbeiträge sind **begründete Annahmen, nicht gegen Referenzmessungen geprüft** — `u_cal` (5 % kalibriert, 35 % unkalibriert) und die Profil-Unsicherheiten (5–10 %) sind gesetzt, nur `u_temporal` und `u_noise` kommen aus dem laufenden Bild. Deshalb nennt die App bewusst **keine Trefferquote**: Die bei k = 2 übliche Lesart „≈ 95 % der Messungen liegen im Bereich" gilt nur, wenn diese Annahmen stimmen. Nachzählen lässt sich das mit dem CSV-Export und `tools/auswertung.js` (siehe „Trainingsdaten auswerten“), über viele *unabhängige* Aufbauten. Realistische Spanne — kalibrieren bringt den größten Sprung, hat aber einen harten Boden bei **±14 %** (siehe „Bekannte Grenzen"):
 
   | Lage | angezeigt (k = 2) |
   |---|---|
@@ -151,6 +151,27 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 
 **Praktisch heißt das:** Kalibrieren ist der mit Abstand größte Hebel (von ±73 % auf ±14–22 %). Danach bringt mehr Sorgfalt bei der Messung selbst kaum noch etwas an der *angezeigten* Zahl — die Reproduzierbarkeit verbessert sich, die ausgewiesene Unsicherheit aber nicht.
 
+## Trainingsdaten auswerten
+
+Die App kann Messpunkte mit Referenzwert sammeln (*Trainingsdaten* → Punkt speichern → *CSV exportieren*). `tools/auswertung.js` beantwortet damit zwei Fragen — ohne Abhängigkeiten, nur Node:
+
+```bash
+node tools/auswertung.js ppfd_traindata_….csv              # Bericht
+node tools/auswertung.js export.csv --geraet "Galaxy S23"  # nur ein Gerät
+node tools/auswertung.js export.csv --json                 # maschinenlesbar
+```
+
+1. **Stimmt die angezeigte Unsicherheit?** Anteil der Referenzwerte, die im angezeigten Bereich ±k·uRel liegen — getrennt nach kalibriert/unkalibriert und zusätzlich *pro Sitzung gemittelt*, damit eine große Sitzung nicht dominiert. Liegt k = 2 über viele Sitzungen deutlich unter 95 %, ist die angezeigte Unsicherheit zu klein.
+2. **Bringt eine Korrektur etwas?** Verglichen werden einfache, physikalisch begründete Modelle für den Faktor Referenz/Rohwert: global, abhängig von der Helligkeit, von den Farbanteilen (Spektrum der Lampe), oder beides. Validiert mit **GroupKFold nach `sessionId`**: Jede Sitzung wird vorhergesagt, ohne dass das Modell sie gesehen hat. Ein Modell gilt nur als besser, wenn es in signifikant mehr *Sitzungen* gewinnt (Vorzeichentest, Bonferroni über die Kandidaten) **und** mindestens 10 % genauer ist.
+
+**Warum nach Sitzung gruppiert?** Punkte derselben Sitzung teilen Diffusor-Aufbau und Haltung. Eine Kreuzvalidierung, die sie auf Trainings- und Testseite verteilt, misst sich selbst — 300 Punkte aus 12 Sitzungen sind statistisch eher 12 als 300. Der Bericht zeigt das direkt: Er validiert ein Modell zusätzlich *ungruppiert* und nennt, um wie viel besser es dort aussieht, als es für eine neue Sitzung ist.
+
+**Wie viele Daten?** Die ehrliche Stichprobengröße ist die Zahl der **Sitzungen**. Für die Unsicherheitsfrage braucht es grob 10 und mehr; im Modellvergleich findet die Auswertung mit 8 Sitzungen nur sehr deutliche Effekte (in Simulationen ~2 von 3), mit 16 fast immer. „Kein belastbarer Gewinn“ heißt bei wenigen Sitzungen deshalb *nicht nachweisbar*, nicht *nicht vorhanden*. Eine Sitzung ist ein Kamerastart: für jede neue Sitzung Kamera stoppen, Diffusor neu anlegen, neu starten, dann 3–5 Punkte bei unterschiedlicher Helligkeit.
+
+**Bewusst noch nicht drin:** flexiblere Modelle (neuronales Netz, Gradient Boosting). Solange die einfachen nicht gemessen sind, gibt es nichts, wogegen sich ein flexibleres behaupten müsste — und die bräuchten Python-Abhängigkeiten. Gruppierung, Metrik und Gegenprobe sind dafür schon da; ein weiteres Modell ist ein Eintrag in `MODELLE`.
+
+Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, im Modellvergleich nicht: Ihre Gruppe ist unbekannt. Eine von einem deutschen Excel neu gespeicherte Datei (Semikolon, Dezimalkomma) wird erkannt.
+
 ## Repo-Layout
 
 | Pfad | Inhalt |
@@ -163,6 +184,8 @@ Weil `u_cal` und `u_profile` gleich groß sind, bringt das Kalibrieren allein nu
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
 | `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
+| `tools/auswertung.js` | Auswertung des CSV-Exports: Unsicherheits-Check und Modellvergleich mit GroupKFold (siehe „Trainingsdaten auswerten“) |
+| `tests/test_auswertung.js` | **16 Tests** für die Auswertung — gegen echte Exporte der App, inkl. Fehlalarmrate und Trennschärfe über simulierte Datensätze |
 | `package.json` | **Nur für die Property-Tests.** Die App selbst hat keine Abhängigkeiten und keinen Build-Step |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
 
@@ -173,13 +196,14 @@ node tests/test_pipeline.js         # 112/112 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 37/37 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
+node tests/test_auswertung.js       # 16/16 erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
 node tests/test_properties.js       # 31/31 erwartet
 node tests/test_model.js            #  3/3  erwartet
 ```
 
-Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
+Die ersten fünf Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
 
 `test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Abgrenzung (dunkle Szene und Lichtwechsel dürfen nicht halten), Flicker-Hysterese, Kalman-Reset beim Moduswechsel und den Unsicherheits-Boden (inkl. Abgleich gegen die Zahlen in diesem README) sowie, dass die Versionsnummer in Titel, Kopfzeile, Service Worker und `package.json` übereinstimmt.
 
@@ -192,6 +216,8 @@ Die ersten vier Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:n
 `test_properties.js` prüft **Invarianten statt Beispiele**: nicht „raw = 21,7 → erwarte `zero-zone`", sondern „für *jede* gültige Eingabe muss gelten: `state === 'ok'` heißt, der Rohwert liegt wirklich innerhalb der Toleranz". fast-check erzeugt je 500 Fälle pro Regel inklusive Randwerten und schrumpft einen Fehlschlag auf das kleinstmögliche Gegenbeispiel. Abgedeckt: sRGB-EOTF, `computeQuality`, `computeUncertainty`, `computeCalib2`, `calibRangeStatus`, `RollingMedian`. Laufzahl über `PROP_RUNS` steuerbar.
 
 Die stärkste Regel dort ist eine **Kopplung**: `state === 'zero-zone'` muss *genau dann* gelten, wenn `Math.max(0, raw·slope + offset)` auf 0 klemmt — wäre die Warnung zu eng, bliebe eine stille Null-Zone; wäre sie zu weit, warnte sie über echte Messwerte.
+
+`test_auswertung.js` erzeugt seine Test-CSV mit dem **echten** `exportTrainCSV()` aus `index.html` (inkl. Formel-Injektionsschutz und Punkten ohne `sessionId`), prüft GroupKFold (keine Sitzung auf beiden Seiten) und misst über je 50 simulierte Datensätze die **Fehlalarmrate** (kein Effekt, trotzdem „Gewinn“ gemeldet) und die **Trennschärfe** (echter Effekt erkannt). Anlass: Die erste Fassung entschied nur über „Median 10 % besser“ und meldete bei 16 Sitzungen ohne jeden Effekt in rund einem Viertel der Fälle einen Gewinn.
 
 `test_model.js` geht eine Stufe weiter: Statt einzelne Funktionen zu prüfen, würfelt es **Befehlsfolgen** (kalibrieren, Profil wechseln, Kamera wechseln, zurücksetzen, neu laden — beliebig verschränkt) und hält nach jedem Schritt ein Parallelmodell gegen den echten Modul-Zustand. Das findet Fehler, die erst durch die *Reihenfolge* entstehen.
 
