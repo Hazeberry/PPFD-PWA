@@ -34,7 +34,12 @@ const api=new Function('localStorage','document','window','navigator','console',
     calibStorageKey,calibLegacyKey,loadCalib,resetCalibration,computeCalib2,CALIB2_KEY,
     get calibP1(){return calibP1;},get calibP2(){return calibP2;},get calibFit(){return calibFit;},
     calibRangeStatus,calibRangeSuffix,setCalibRangeLine,loadCalibFactor,CALIB_KEY,
-    PROC_W,PROC_H};`
+    PROC_W,PROC_H,
+    applyCalibration,saveTrainPoint,settleTimer,SETTLE_WAIT_MSG,TRAINDATA_KEY,
+    get isMeasuring(){return isMeasuring;},set isMeasuring(v){isMeasuring=v;},
+    set currentRawPPFDUncalibrated(v){currentRawPPFDUncalibrated=v;},
+    set lastFrameSnapshot(v){lastFrameSnapshot=v;},
+    get toastLast(){return toastLast;},set toastLast(v){toastLast=v;}};`
 )(localStorage,document,window,navigator,console,()=>0,{now:()=>Date.now()},()=>{},()=>true);
 
 let pass=0,fail=0;
@@ -228,7 +233,7 @@ t('revertToAutoExposure() setzt den kompletten Schaetzzustand zurueck', ()=>{
     ['Kalman',        /kalman\.reset\(\)/],
     ['temporalStats', /temporalStats\.reset\(\)/],
     ['ppfdMedian',    /ppfdMedian\.reset\(\)/],
-    ['tempCompensator',/tempCompensator\.reset\(\)/],
+    ['settleTimer',/settleTimer\.reset\(\)/],
   ]) assert.ok(muster.test(b), was+'-Reset fehlt - Anzeige driftet mit altem Zustand nach');
 });
 
@@ -433,6 +438,58 @@ t('Beim Stoppen der Messung verschwindet die Warnung', ()=>{
   const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
   const anzahl=(skript.match(/setCalibRangeLine\(''\)/g)||[]).length;
   assert.ok(anzahl>=2,'nur '+anzahl+'x zurueckgesetzt - Warnung koennte stehen bleiben');
+});
+
+console.log('== Einschwingen: Kalibrieren und Trainingspunkte erst danach (v3.4.18) ==');
+
+// Messlage wie nach dem Kamerastart: Messung laeuft, Rohwert 100, Referenz 200.
+function messlage(){
+  for(const k of Object.keys(store)) delete store[k];
+  api.cameraFacing='user'; api.manualLightKey='WHITE_LED';
+  api.resetCalibration(); api.loadCalib();
+  api.isMeasuring=true; api.currentRawPPFDUncalibrated=100;
+  api.lastFrameSnapshot={clipLevel:'ok',signalLevel:'ok'};
+  document.getElementById('refPPFD').value='200';
+  document.getElementById('trainRefPPFD').value='200';
+  document.getElementById('trainDevice').value='TestPhone';
+  api.settleTimer.reset(); api.toastLast=null;
+}
+const einschwingen=()=>{for(let i=0;i<api.settleTimer.warmupFrames;i++) api.settleTimer.update();};
+
+t('REGRESSION: Kalibrieren waehrend des Einschwingens wird abgelehnt', ()=>{
+  messlage();
+  api.applyCalibration();
+  assert.strictEqual(api.customCalibFactor,null,'Kalibrierung trotz laufendem Einschwingen uebernommen');
+  assert.strictEqual(store[api.calibStorageKey()],undefined,'Kalibrierung trotzdem gespeichert');
+  assert.strictEqual(api.toastLast,api.SETTLE_WAIT_MSG,'keine verstaendliche Meldung');
+});
+
+t('Nach dem Einschwingen wird kalibriert wie gewohnt', ()=>{
+  messlage(); einschwingen();
+  assert.strictEqual(api.settleTimer.settled,true);
+  api.applyCalibration();
+  assert.ok(Math.abs(api.customCalibFactor-2)<1e-12,'Steigung '+api.customCalibFactor);
+});
+
+t('REGRESSION: Trainingspunkt waehrend des Einschwingens wird abgelehnt', ()=>{
+  messlage();
+  api.saveTrainPoint();
+  assert.strictEqual(store[api.TRAINDATA_KEY],undefined,'Trainingspunkt trotz laufendem Einschwingen gespeichert');
+  assert.strictEqual(api.toastLast,api.SETTLE_WAIT_MSG);
+});
+
+t('Nach dem Einschwingen wird der Trainingspunkt gespeichert', ()=>{
+  messlage(); einschwingen();
+  api.saveTrainPoint();
+  const daten=JSON.parse(store[api.TRAINDATA_KEY]||'[]');
+  assert.strictEqual(daten.length,1);
+  assert.strictEqual(daten[0].referenzPPFD,200);
+});
+
+t('Neustart der Kamera sperrt wieder (Einschwingen beginnt neu)', ()=>{
+  messlage(); einschwingen(); api.settleTimer.reset();
+  api.applyCalibration();
+  assert.strictEqual(api.customCalibFactor,null);
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');

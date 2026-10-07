@@ -16,13 +16,13 @@ ${m[1]}
 return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   SIGNAL_CRIT_LIN, SIGNAL_LOW_LIN, classifySignal, analyzeFrame,
   AdaptivePPFDKalmanFilter, LightSourceDetector, SpatialFlickerDetector,
-  ClippingDetector, TemperatureCompensator, AppStatusStateMachine,
+  ClippingDetector, SettleTimer, AppStatusStateMachine,
   calculatePARFromLinear, ramp01, TemporalStats, computeQuality,
   Q_CLIP_FULL, Q_CLIP_ZERO, Q_UNI_FULL, Q_UNI_ZERO,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, TemperatureCompensator };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -554,7 +554,7 @@ t('REGRESSION: stehengebliebener temporalStats-Puffer kippt Q auf 0', () => {
 t('Warmup laeuft nach dem Moduswechsel neu an (Kalman ruht so lange)', () => {
   // Waehrend des Warmups ruft der Aufrufer update() gar nicht auf - genau
   // deshalb ueberlebte das alte x bisher die vollen 300 Frames.
-  const tc = new P.TemperatureCompensator();
+  const tc = new P.SettleTimer();
   for (let i = 0; i < 400; i++) tc.update();
   assert.strictEqual(tc.update().isWarmedUp, true);
   tc.reset();
@@ -675,11 +675,21 @@ t('Kalman konvergiert auf konstante Messreihe', () => {
   for (let i = 0; i < 60; i++) x = k.update(500);
   approx(x, 500, 25, 'Konvergenz');
 });
-t('Warmup-Faktor: 0.98 bei Frame 0 -> 1.0 nach 300 Frames', () => {
-  const tc = new P.TemperatureCompensator();
-  approx(tc.update().factor, 0.98, 1e-3);
-  let s; for (let i = 0; i < 300; i++) s = tc.update();
-  assert.strictEqual(s.factor, 1.0); assert.ok(s.isWarmedUp);
+t('Einschwingen: keine Korrektur des Messwerts, fertig nach genau 300 Frames (v3.4.18)', () => {
+  // Bis v3.4.17 senkte ein "Temperatur"-Faktor den Rohwert waehrend der
+  // ersten 300 Frames um bis zu 2 % - ohne Grundlage, gemessen wurde nie eine
+  // Temperatur. Der Timer liefert jetzt nur noch den Fortschritt.
+  const tc = new P.SettleTimer();
+  const erster = tc.update();
+  assert.strictEqual(erster.factor, undefined, 'Einschwingen darf den Messwert nicht korrigieren');
+  assert.strictEqual(erster.isWarmedUp, false);
+  let s; for (let i = 1; i < 299; i++) s = tc.update();
+  assert.strictEqual(s.isWarmedUp, false, 'nach 299 Frames noch nicht eingeschwungen');
+  assert.strictEqual(tc.settled, false);
+  s = tc.update();
+  assert.ok(s.isWarmedUp && tc.settled, 'nach 300 Frames eingeschwungen');
+  assert.strictEqual(s.progress, 100);
+  assert.ok(!/rawPPFD\s*\*=\s*settleStatus/.test(html), 'Messschleife multipliziert den Rohwert noch mit dem Einschwing-Status');
 });
 
 console.log('== Uniformität (3x3-CV, v3.3.1) ==');

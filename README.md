@@ -2,7 +2,7 @@
 
 **Smartphone-Kamera-basierte PPFD/PAR-Messung für Pflanzenbeleuchtung — als installierbare PWA, komplett offline-fähig, ohne App-Store.**
 
-Die App schätzt mit der Handykamera die PPFD ab (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel mit der exakten sRGB-Kennlinie (IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet physikalisch auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte erweiterte Messunsicherheit (± %, k = 2)** aus. Absolut belastbar wird der Wert erst mit Kosinus-Korrektor und Kalibrierung — ohne beides taugt er vor allem für Vergleiche im selben Aufbau.
+Die App schätzt mit der Handykamera die PPFD ab (µmol·m⁻²·s⁻¹): Sie linearisiert die Kamerapixel mit der exakten sRGB-Kennlinie (IEC 61966-2-1), gewichtet spektral nach Lichtquellen-Profil, rechnet über die Belichtungsgleichung (Bildhelligkeit, Belichtungszeit, ISO) auf PPFD um und gibt zu jedem Messwert eine **Qualitätsbewertung (Q)** und eine **GUM-inspirierte erweiterte Messunsicherheit (± %, k = 2)** aus. Absolut belastbar wird der Wert erst mit Kosinus-Korrektor und Kalibrierung — ohne beides taugt er vor allem für Vergleiche im selben Aufbau.
 
 > **Empfohlener Aufbau: Kosinus-Korrektor *und* Kalibrierung.**
 > Wir empfehlen ausdrücklich das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH vor der Frontkamera. **Auch der Kosinus-Korrektor muss in der App kalibriert werden** — einmalig gegen ein Referenz-PAR-Meter. Beides ergänzt sich, keins ersetzt das andere: Der Korrektor sorgt dafür, dass das Licht *aus allen Richtungen richtig gewichtet* wird; die Kalibrierung legt die *absolute Skala* fest. Papier ist nur ein Notbehelf zum Ausprobieren.
@@ -16,7 +16,7 @@ Auf dem Smartphone: Seite öffnen → Browser-Menü → **„Zum Startbildschirm
 ## Bedienung in 3 Schritten
 
 1. **Diffusor:** Für belastbare Werte gehört ein echter **Kosinus-Korrektor** vor die Kamera — empfohlen ist das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH (Clip mit Gummidichtung vor der Frontkamera). **Papier ist nur ein Notbehelf** zum Ausprobieren: 2–3 Lagen weißes Kopierpapier (80 g/m²) auf die Linse legen.
-2. **Kamera aktivieren**, 300 Frames Warmup abwarten (Temperatur-Stabilisierung).
+2. **Kamera aktivieren und einschwingen lassen** (300 Frames, je nach Bildrate 5–10 s): Kamera, Bildverarbeitung und Lichtquellen-Erkennung stellen sich nach dem Start ein. Erst danach erscheint der Messwert — und erst dann lässt sich kalibrieren oder ein Trainingspunkt speichern. Eine Temperatur misst die App dabei nicht; bis v3.4.17 hieß diese Phase irreführend „Aufwärmen".
 3. **Kalibrieren — auch mit Kosinus-Korrektor, und zwar mit genau dem Diffusor, mit dem du misst** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Jeder Diffusor schwächt das Licht um einen eigenen Faktor, den die App nicht kennen kann; ohne Kalibrierung bleibt die angezeigte Unsicherheit deshalb bei rund ±72 % — mit Korrektor genauso wie mit Papier. Wechselst du den Diffusor (Papier ↔ Kosinus-Korrektor, andere Halterung), im Kalibrier-Dialog erst **Reset**, dann neu kalibrieren (siehe „Bekannte Grenzen", Punkt 2). Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
 
 Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pixelgenau pro Kamera.
@@ -51,6 +51,7 @@ Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem d
 ## Was drinsteckt
 
 - **sRGB-Linearisierung mit der exakten Kennlinie** (IEC 61966-2-1 statt γ≈2,2-Näherung), BT.709-Luma, lineare Domäne für alle Statistiken. Exakt ist dabei die *Umkehrung der sRGB-Kurve* — nicht zwingend die Linearität der Pixel: Handys legen Tonkurven, HDR-Effekte und Rauschfilter über das Bild, bevor die App es sieht. Was davon übrig bleibt, fängt die Kalibrierung auf; die Zwei-Punkt-Kalibrierung in erster Näherung auch über den Helligkeitsbereich
+- **Umrechnung über die Belichtungsgleichung** der Fotografie: Die linearisierte Bildhelligkeit wird durch Belichtungszeit und ISO geteilt — beide liest die App live von der Kamera —, mit dem Quadrat der Blendenzahl multipliziert und über eine Skalenkonstante und den Profilfaktor auf PPFD gebracht. **Physikalisch ist die Form, nicht jede Zahl darin:** Die Blende ist für jedes Handy fest mit f/2 angenommen (echte Handy-Blenden liegen grob zwischen f/1,7 und f/2,4 — allein das ist bis zu Faktor 2), die Skalenkonstante (1284) ist ein empirischer Platzhalter, und es gibt pauschale Abschläge, die sogar *stufenweise* greifen: −5 % über ISO 400, −12 % über ISO 800 (betrifft vor allem den Auto-Modus, in dem sich die ISO ändert) und −2 % bei Belichtungen länger als 1/30 s. Die absolute Skala liefert deshalb die Kalibrierung. Dass die Form trägt, zeigt ein Feldtest: Zwei Messungen mit 4 ms und 1 ms Belichtung ergaben im Verhältnis stimmige Werte. Die ISO-Stufen bleiben vorerst — ohne Vergleichsmessungen wäre jede glattere Kurve genauso geraten.
 - **Lichtquellen-Profile** (Sonnenlicht, weiße LED, Blurple-Panel, HPS, MH, Leuchtstoff) mit Faktor + nominaler Unsicherheit. Auto-Erkennung nur für die drei Klassen, die sich in der RGB-Chromatizität belastbar trennen lassen (Sonnenlicht, HPS, Leuchtstoff) — der Rest ist manuell wählbar. **Moderne Grow-LEDs mit Weißlicht-Basis gehören auf „Weiße LED“**: ihren 660-nm-Rot-Boost bewertet die Kamera im Verhältnis zu seinen Photonen **deutlich zu schwach**. Unsichtbar ist er nicht — der Rotkanal registriert 660 nm —, aber der Infrarot-Sperrfilter vor dem Sensor dämpft dort bereits, und die Bildverarbeitung zielt auf augenähnliche Farben. Zur Größenordnung: Das *Auge* ist bei 660 nm rund achtmal unempfindlicher als bei 610 nm (V(λ) ≈ 0,06 gegen ≈ 0,50); die Kurve der Kamera ist das nicht, sie ist gerätespezifisch. Ohne Kalibrierung fällt der Wert unter solchen Lampen deshalb zu niedrig aus. Die Nutzer-Kalibrierung wird **pro Kamera und Profil** gespeichert — der Profilfaktor wirkt auf die PAR-Gewichtung, nicht auf Lux, und dieser Versatz ist profilabhängig
 - **Qualitätsindex Q** = Q_clip × Q_uniformity × Q_signal × Q_stability (3×3-Zonen-CV, Temporal-CV) als Güte-Anzeige. Der **Kalman-Halt** läuft bewusst auf einem engeren Kriterium (`Q_clip × Q_uniformity < 0.35`): nur wenn der *Frame die Szene nicht abbildet* — übersteuert oder ungleich ausgeleuchtet — wird der letzte Wert gehalten. Wenig Signal und hohe zeitliche Streuung sind *Messergebnisse*, keine Haltegründe: wird es dunkel, läuft die Anzeige gegen 0, statt einzufrieren.
 
@@ -179,7 +180,7 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
 | `tests/test_pipeline.js` | Node-Regressions-Harness, **112 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **37 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset und Schleifen-Robustheit |
+| `tests/test_calib_storage.js` | Integrations-Harness, **42 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
 | `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
 | `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
@@ -193,7 +194,7 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 
 ```bash
 node tests/test_pipeline.js         # 112/112 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 37/37 erwartet
+node tests/test_calib_storage.js    # 42/42 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 node tests/test_auswertung.js       # 16/16 erwartet
