@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.17</title>
+<title>PPFD Meter Pro v3.4.18</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,13 +94,13 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.17</span>
+  <span class="app-title">PPFD Meter Pro v3.4.18</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
   <div class="ppfd-card" id="ppfdCard">
     <div class="warmup-overlay" id="warmupOverlay">
-      <span style="font-family:var(--mono);font-size:12px;color:var(--purple)">SENSOR WÄRMT AUF...</span>
+      <span style="font-family:var(--mono);font-size:12px;color:var(--purple)">KAMERA STELLT SICH EIN...</span>
       <div class="warmup-bar"><div class="warmup-fill" id="warmupFill"></div></div>
       <span style="font-size:10px;color:var(--muted);margin-top:8px" id="warmupText">0%</span>
     </div>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.17 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.18 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -215,6 +215,7 @@
     Kosinus-Korrektor als Empfehlung, Kalibrier-Hinweis zum Diffusor-Wechsel<br>
     Neustart-Hinweis bei dauerhaft schwachem Signal nach einer Belichtungs-Stufe<br>
     Unsicherheit ohne 95-%-Behauptung · 660-nm-Hinweis und Linearisierung präzisiert<br>
+    Einschwingen statt „Aufwärmen“ (keine Temperatur-Korrektur) · Kalibrieren erst nach dem Einschwingen<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -436,14 +437,26 @@ class ClippingDetector {
   }
 }
 
-class TemperatureCompensator {
+// v3.4.18 (Review): hiess bisher TemperatureCompensator, und die Anzeige
+// sagte "SENSOR WAERMT AUF". Eine Temperatur wird aber weder gemessen noch
+// modelliert - es werden nur Frames gezaehlt, und 300 Frames sind 5-10 s;
+// thermisch pendelt sich ein Kamerasensor eher in Minuten ein. Was die
+// Wartezeit tatsaechlich leistet: Kamera, Bildverarbeitung und
+// Lichtquellen-Erkennung stellen sich nach dem Start ein. Deshalb
+// "Einschwingen".
+// Entfernt: ein Faktor, der den Rohwert waehrend dieser Zeit um bis zu 2 %
+// absenkte (linear auf 1.0 bis Frame 300) - ohne jede Grundlage. Sichtbar
+// war er nie (die Anzeige zeigt bis zum Ende '---'), er landete aber in
+// Kalibrierungen und Trainingspunkten, die waehrenddessen erhoben wurden.
+// Beides ist jetzt bis zum Ende des Einschwingens gesperrt (settled).
+class SettleTimer {
   constructor(){this.warmupFrames=300;this.framesCaptured=0;}
   update(){
     this.framesCaptured++;
     const p=Math.min(100,(this.framesCaptured/this.warmupFrames)*100);
-    if(this.framesCaptured<this.warmupFrames) return{factor:1.0-(0.02*(1-this.framesCaptured/this.warmupFrames)),progress:p,isWarmedUp:false};
-    return{factor:1.0,progress:100,isWarmedUp:true};
+    return{progress:p,isWarmedUp:this.framesCaptured>=this.warmupFrames};
   }
+  get settled(){return this.framesCaptured>=this.warmupFrames;}
   reset(){this.framesCaptured=0;}
 }
 
@@ -791,7 +804,7 @@ const lightDetector=new LightSourceDetector();
 const flickerDetector=new SpatialFlickerDetector(0.95);
 const gainController=new SoftwareGainController();
 const clippingDetector=new ClippingDetector();
-const tempCompensator=new TemperatureCompensator();
+const settleTimer=new SettleTimer();
 const appFSM=new AppStatusStateMachine();
 
 let isMeasuring=false,currentFactor=0.0185,currentLightSourceName='SUNLIGHT';
@@ -1471,7 +1484,13 @@ function openCalibModal(){
   document.getElementById('calibModal').classList.add('open');
 }
 function closeCalibModal(){document.getElementById('calibModal').classList.remove('open');}
+// v3.4.18: Kalibrieren und Trainingspunkte erst nach dem Einschwingen. Die
+// Anzeige haelt ihren Wert bis dahin zurueck - in genau dem Zustand, den die
+// App selbst noch nicht fuer messbar haelt, durfte man bisher kalibrieren,
+// und die Kalibrierung blieb dauerhaft.
+const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert angezeigt wird.';
 function applyCalibration(){
+  if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
@@ -1573,6 +1592,7 @@ async function initTrainDevice(){
 }
 function saveTrainPoint(){
   if(!isMeasuring||!lastFrameSnapshot){showError('Erst Messung starten – Datenpunkt braucht einen Live-Frame.');return;}
+  if(!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;} // v3.4.18, s. applyCalibration
   const device=(document.getElementById('trainDevice').value||'').trim();
   if(!device){showError('Gerät/Handy-Modell angeben – wichtig, wenn mehrere Personen Daten beisteuern (unterschiedliche Kamerasensoren!).');return;}
   const ref=parseFloat(document.getElementById('trainRefPPFD').value);
@@ -1755,7 +1775,7 @@ async function startCamera(){
     }
     kalman.r=hardwareSettings.constraintsApplied?2.5:8.0;
     kalman.reset(); // v3.4.6: dieselbe Methode wie revertToAutoExposure() - beide Pfade duerfen nicht auseinanderlaufen
-    tempCompensator.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
+    settleTimer.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
     canvasFailStreak=0; // v3.4.6: sonst startet eine neue Sitzung mit dem Reststand der alten
     currentSessionId=newSessionId(); // v3.4.8: neuer Aufbau => neue Gruppe (s. TRAINDATA_KEY)
@@ -1956,7 +1976,7 @@ async function revertToAutoExposure(reason){
   document.getElementById('hardwareVal').textContent='Auto (Fallback: '+(reason||'auto-revert')+')';
   kalman.r=8.0;
   // v3.4.6 FIX (Review/Sonnet): Beim Umschalten auf Software-Gain aendert sich
-  // die Messkette komplett - bisher wurde nur tempCompensator zurueckgesetzt,
+  // die Messkette komplett - bisher wurde nur settleTimer zurueckgesetzt,
   // der Schaetzzustand blieb stehen. Zwei messbare Folgen:
   //
   // 1) Kalman: waehrend des Warmups wird update() gar nicht aufgerufen (die
@@ -1979,7 +1999,7 @@ async function revertToAutoExposure(reason){
   temporalStats.reset();
   ppfdMedian.reset();
   lastQuality=null;lastUncertainty=null;
-  tempCompensator.reset();
+  settleTimer.reset();
   wbManual=false;
   lightDetector.unlock();
 }
@@ -2186,11 +2206,11 @@ function processLoop(timestamp){
   // v3.4.16: dauerhaft schwaches Signal nach einer Clip-Stufe -> Neustart-Hinweis.
   if(lowSignalAfterStep(signalStatus.level)) showError(LOW_AFTER_STEP_MSG);
 
-  const tempStatus=tempCompensator.update();
-  if(!tempStatus.isWarmedUp){
+  const settleStatus=settleTimer.update();
+  if(!settleStatus.isWarmedUp){
     document.getElementById('warmupOverlay').classList.add('active');
-    document.getElementById('warmupFill').style.width=tempStatus.progress+'%';
-    document.getElementById('warmupText').textContent=Math.round(tempStatus.progress)+'%';
+    document.getElementById('warmupFill').style.width=settleStatus.progress+'%';
+    document.getElementById('warmupText').textContent=Math.round(settleStatus.progress)+'%';
     document.getElementById('statusDot').className='status-dot warmup';
   }else{document.getElementById('warmupOverlay').classList.remove('active');}
 
@@ -2211,7 +2231,7 @@ function processLoop(timestamp){
       document.getElementById('spectralFactorVal').textContent='×'+currentFactor.toFixed(4);
       document.getElementById('confVal').textContent=(lightResult.conf*100).toFixed(0)+'%';
 
-      if(tempStatus.isWarmedUp && !wbManual && !lightDetector.locked){lightDetector.lock();}
+      if(settleStatus.isWarmedUp && !wbManual && !lightDetector.locked){lightDetector.lock();}
     }
 
     const fe=document.getElementById('flickerWarning');
@@ -2239,7 +2259,6 @@ function processLoop(timestamp){
   const parVal=calculatePARFromLinear(avgR_lin,avgG_lin,avgB_lin,currentLightSourceName);
   const hSensor_par=(parVal*APERTURE_SQ)/(effectiveISO*(hardwareSettings?.exposureTime||EXPOSURE_TIME));
   let rawPPFD=hSensor_par*calibConstant*currentFactor*gainMultiplier;
-  rawPPFD*=tempStatus.factor;
   currentRawPPFDUncalibrated=rawPPFD;
   // v3.4.10: Bereichsbefund auf dem UNKALIBRIERTEN Rohwert - die
   // Stuetzstellen sind in derselben Groesse gespeichert (p.raw).
@@ -2312,12 +2331,12 @@ function processLoop(timestamp){
   // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese
   // Werte waeren um den Stufenfaktor falsch und duerfen nicht in den Kalman.
   const holdKalman=isClipping||!qGateOpen||clipStepInProgress;
-  const displayPPFD=tempStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
-  const state=appFSM.update(tempStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
+  const displayPPFD=settleStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
+  const state=appFSM.update(settleStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
   flickerResultFresh=false; // verbraucht - bis zum naechsten 1-Hz-Block ruht der Flicker-Akkumulator
 
-  document.getElementById('ppfdVal').textContent=tempStatus.isWarmedUp?(isClipping?'———':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD))):'–––';
-  if(tempStatus.isWarmedUp&&!isClipping){
+  document.getElementById('ppfdVal').textContent=settleStatus.isWarmedUp?(isClipping?'———':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD))):'–––';
+  if(settleStatus.isWarmedUp&&!isClipping){
     const dli12=(displayPPFD*12*3600/1e6).toFixed(1);
     const dli18=(displayPPFD*18*3600/1e6).toFixed(1);
     document.getElementById('dliVal').textContent=`DLI 12h: ${dli12} · 18h: ${dli18} mol·m⁻²·d⁻¹`;
