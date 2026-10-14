@@ -16,7 +16,7 @@ Auf dem Smartphone: Seite öffnen → Browser-Menü → **„Zum Startbildschirm
 ## Bedienung in 3 Schritten
 
 1. **Diffusor:** Für belastbare Werte gehört ein echter **Kosinus-Korrektor** vor die Kamera — empfohlen ist das [**Lightray Diffusor- & Kosinuskorrektor-Zubehör**](https://lightray.io/de/diffuser/) der Lightray Innovation GmbH (Clip mit Gummidichtung vor der Frontkamera). **Papier ist nur ein Notbehelf** zum Ausprobieren: 2–3 Lagen weißes Kopierpapier (80 g/m²) auf die Linse legen.
-2. **Kamera aktivieren und einschwingen lassen** (300 Frames, je nach Bildrate 5–10 s): Kamera, Bildverarbeitung und Lichtquellen-Erkennung stellen sich nach dem Start ein. Erst danach erscheint der Messwert — und erst dann lässt sich kalibrieren oder ein Trainingspunkt speichern. Eine Temperatur misst die App dabei nicht; bis v3.4.17 hieß diese Phase irreführend „Aufwärmen".
+2. **Kamera aktivieren und einschwingen lassen** (fest 5 s, in Millisekunden gerechnet — unabhängig von Kamera-Bildrate und Display-Takt): Kamera, Bildverarbeitung und Lichtquellen-Erkennung stellen sich nach dem Start ein. Erst danach erscheint der Messwert — und erst dann lässt sich kalibrieren oder ein Trainingspunkt speichern. Eine Temperatur misst die App dabei nicht; bis v3.4.17 hieß diese Phase irreführend „Aufwärmen".
 3. **Kalibrieren — auch mit Kosinus-Korrektor, und zwar mit genau dem Diffusor, mit dem du misst** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Jeder Diffusor schwächt das Licht um einen eigenen Faktor, den die App nicht kennen kann; ohne Kalibrierung bleibt die angezeigte Unsicherheit deshalb bei rund ±72 % — mit Korrektor genauso wie mit Papier. Wechselst du den Diffusor (Papier ↔ Kosinus-Korrektor, andere Halterung), im Kalibrier-Dialog erst **Reset**, dann neu kalibrieren (siehe „Bekannte Grenzen", Punkt 2). Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset` und kompensiert Sensor-Nichtlinearität über den Dynamikbereich. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
 
 Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pixelgenau pro Kamera.
@@ -68,7 +68,7 @@ Die App rechnet sauber — ob die Zahl stimmt, entscheidet sich aber vor allem d
 
   Der CSV-Export führt die Standardunsicherheit (k = 1) in der Spalte `uRel_k1`.
 - **Status-Checkliste** (✓/⚠ Übersteuerung, Gleichmäßigkeit, Signal, Stabilität) mit handlungsleitenden Hinweisen
-- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen unrepräsentative Frames, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames, PWM-robuste Belichtungs-Verifikation, stufenweises Herunterregeln bei dauerhaftem Übersteuern im Manuell-Modus, Watchdog-gehärteter Kamerastart, gegen Canvas-Fehler abgesicherte Messschleife, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
+- **Robustheit:** Median-Vorfilter (N=5) + adaptiver Kalman, Q-Gate gegen unrepräsentative Frames, Rolling-Shutter-Flickererkennung mit Periodizitäts-Check und Hysterese in Detektionen statt Frames (eine pausierte Erkennung hält den Zustand, statt eine Warnung abzubauen), Frame-Gate (nur neue Kameraframes füttern Median, Kalman und CV; Fristen laufen in Millisekunden), PWM-robuste Belichtungs-Verifikation, stufenweises Herunterregeln bei dauerhaftem Übersteuern im Manuell-Modus, Watchdog-gehärteter Kamerastart, Erkennung einer von außen beendeten Kamera, transaktionales Speichern der Kalibrierung (bei Speicherfehler bleibt die alte erhalten und es gibt keine Erfolgsmeldung), gegen Canvas-Fehler abgesicherte Messschleife, WakeLock, Trainingsdaten-CSV-Export (injektionssicher)
 - **PWA:** `manifest.json` + `sw.js` (cache-first, versionsierter Cache), Icons inkl. maskable
 
 ## Bekannte Grenzen
@@ -179,10 +179,11 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **112 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **42 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
-| `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **137 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_calib_storage.js` | Integrations-Harness, **49 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
+| `tests/test_exposure_budget.js` | **29 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
+| `tests/test_frame_gate.js` | **17 Tests**: fährt die echte `processLoop` mit simulierten 30/60-fps-Kameras an 60/120-Hz-Displays (Frame-Gate, Fristen in ms, Stream-Ende) |
 | `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
 | `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
 | `tools/auswertung.js` | Auswertung des CSV-Exports: Unsicherheits-Check und Modellvergleich mit GroupKFold (siehe „Trainingsdaten auswerten“) |
@@ -193,26 +194,29 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 112/112 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 42/42 erwartet
-node tests/test_exposure_budget.js  # 28/28 erwartet
+node tests/test_pipeline.js         # 137/137 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 49/49 erwartet
+node tests/test_exposure_budget.js  # 29/29 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 node tests/test_auswertung.js       # 16/16 erwartet
+node tests/test_frame_gate.js       # 17/17 erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
 node tests/test_properties.js       # 31/31 erwartet
 node tests/test_model.js            #  3/3  erwartet
 ```
 
-Die ersten fünf Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
+Die ersten sechs Harnesses laufen **ohne jede Abhängigkeit** — `npm run test:nodeps` fasst sie zusammen. Nur `test_properties.js` braucht fast-check; die App selbst bleibt unberührt.
 
 `test_pipeline.js` extrahiert den `PURE-PIPELINE`-Block aus `index.html` und testet ihn gegen synthetische Frames: EOTF-Endpunkte/Knie, Frame-Analyse, Flicker-Regressionen, FSM, Profile, Kalman, Uniformität, Q-Komponenten, Unsicherheits-Szenarien, Schwarzwert-Subtraktion, Zwei-Punkt-Fit inkl. Guards und Clamp-Konsistenz, Median-Vorfilter, Q-Gate-Abgrenzung (dunkle Szene und Lichtwechsel dürfen nicht halten), Flicker-Hysterese, Kalman-Reset beim Moduswechsel und den Unsicherheits-Boden (inkl. Abgleich gegen die Zahlen in diesem README) sowie, dass die Versionsnummer in Titel, Kopfzeile, Service Worker und `package.json` übereinstimmt.
 
 `test_calib_storage.js` lädt das echte `<script>` in eine minimale DOM-/`localStorage`-Attrappe und prüft Kalibrier-Storage (Profilbindung, Legacy-Fallback, vollständiges Zurücksetzen) sowie die Canvas-Verdrahtung — dass `canvas.width/height` aus `PROC_W`/`PROC_H` kommen und im Skript keine nackten `320`/`240`-Literale mehr stehen.
 
-`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert. Seit v3.4.14 zusätzlich `stepDownExposureManual()`: dass Formel-Belichtung und Drift-Baseline auf den vom Treiber **gemeldeten** Wert nachziehen (sonst fiele die Anzeige um Faktor 4 bzw. schaltete der Drift-Check auf Auto zurück), dass ein ignorierender Treiber, das Treiber-Minimum, ein Stopp oder ein Auto-Rückfall während der Umstellung nichts anfassen — und, am Quelltext, dass Kalman und Drift-Check während der Umstellung pausieren. Seit v3.4.16 außerdem der Neustart-Hinweis: nie ohne vorherige erfolgreiche Stufe, erst nach der vollen Frame-Zahl, Rücksetzen durch einen guten Frame, einmal pro Stufe — und am Quelltext, dass nirgends automatisch hochgeregelt wird.
+`test_exposure_budget.js` fährt `tuneExposure()` mit einer **simulierten Uhr** (`setTimeout` lässt die Uhr springen und löst sofort auf) gegen Track-Attrappen: dass der Verify-Schritt nur startet, wenn er noch vollständig ins 8-s-Budget passt, dass eine bewegte Settings-Meldung als Beleg zählt und ein quantisierender Treiber keinen liefert. Seit v3.4.14 zusätzlich `stepDownExposureManual()`: dass Formel-Belichtung und Drift-Baseline auf den vom Treiber **gemeldeten** Wert nachziehen (sonst fiele die Anzeige um Faktor 4 bzw. schaltete der Drift-Check auf Auto zurück), dass ein ignorierender Treiber, das Treiber-Minimum, ein Stopp oder ein Auto-Rückfall während der Umstellung nichts anfassen — und, am Quelltext, dass Kalman und Drift-Check während der Umstellung pausieren. Seit v3.4.16 außerdem der Neustart-Hinweis: nie ohne vorherige erfolgreiche Stufe, erst nach der vollen Frist (3 s, unabhängig vom Aufruftakt), Rücksetzen durch einen guten Frame, einmal pro Stufe — und am Quelltext, dass nirgends automatisch hochgeregelt wird.
 
 `test_sw_fallback.js` lädt `sw.js` in eine `ServiceWorkerGlobalScope`-Attrappe: die App-Shell darf nur bei Navigationen als Offline-Fallback kommen, ein fehlgeschlagenes Bild oder JSON bekommt einen echten Netzwerkfehler statt HTML.
+
+`test_frame_gate.js` fährt die **echte `processLoop`** gegen eine kleine Zeitmaschine: Kameras mit 30 und 60 fps, Displays mit 60 und 120 Hz, je mit `requestVideoFrameCallback` und mit dem `currentTime`-Fallback. Hintergrund: Die Schleife läuft pro Display-Refresh, nicht pro Kameraframe. Bis v3.4.18 wurde jeder Durchlauf wie ein neuer Frame behandelt — bei 120 Hz/30 fps lief derselbe Frame ~4× durch Median, Kalman und temporalen CV (Duplikate machen den CV künstlich klein, Q und Unsicherheit wirken zu gut), und alle „Frames“-Fristen liefen mit dem Display statt mit der Zeit. Geprüft wird: verarbeitete Frames = gelieferte Kameraframes, keine Duplikate in den Fenstern, identische Fenster auf 60 und 120 Hz, und dass Einschwingen (5 s), Schwarzbild (1,5 s), Belichtungs-Check (1 s) und die FSM-Schwellen auf jedem Gerät gleich lang dauern. Dazu das Stream-Ende (ein verspätetes Ereignis einer früheren Kamera darf die neue Sitzung nicht beenden). Gegen den Stand v3.4.18 (`node tests/test_frame_gate.js pfad/zu/altem/index.html`) scheitern alle Kern-Tests.
 
 `test_properties.js` prüft **Invarianten statt Beispiele**: nicht „raw = 21,7 → erwarte `zero-zone`", sondern „für *jede* gültige Eingabe muss gelten: `state === 'ok'` heißt, der Rohwert liegt wirklich innerhalb der Toleranz". fast-check erzeugt je 500 Fälle pro Regel inklusive Randwerten und schrumpft einen Fehlschlag auf das kleinstmögliche Gegenbeispiel. Abgedeckt: sRGB-EOTF, `computeQuality`, `computeUncertainty`, `computeCalib2`, `calibRangeStatus`, `RollingMedian`. Laufzahl über `PROP_RUNS` steuerbar.
 

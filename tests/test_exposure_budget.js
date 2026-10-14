@@ -41,10 +41,10 @@ function makeApp(){
       stepDownExposureManual:typeof stepDownExposureManual==='function'?stepDownExposureManual:undefined,
       CLIP_STEP_FACTOR:typeof CLIP_STEP_FACTOR!=='undefined'?CLIP_STEP_FACTOR:undefined,
       lowSignalAfterStep:typeof lowSignalAfterStep==='function'?lowSignalAfterStep:undefined,
-      LOW_AFTER_STEP_FRAMES:typeof LOW_AFTER_STEP_FRAMES!=='undefined'?LOW_AFTER_STEP_FRAMES:undefined,
+      LOW_AFTER_STEP_MS:typeof LOW_AFTER_STEP_MS!=='undefined'?LOW_AFTER_STEP_MS:undefined,
+      CLIP_ESCALATE_MS:typeof CLIP_ESCALATE_MS!=='undefined'?CLIP_ESCALATE_MS:undefined,
       get clipSteppedDown(){return clipSteppedDown;},set clipSteppedDown(v){clipSteppedDown=v;},
       get lowAfterStepHintShown(){return lowAfterStepHintShown;},
-      set lowAfterStepFrames(v){lowAfterStepFrames=v;},
       EXP_UNIT,EXPOSURE_DRIFT_THRESHOLD,temporalStats,ppfdMedian,
       set activeStream(v){activeStream=v;},
       get isMeasuring(){return isMeasuring;},set isMeasuring(v){isMeasuring=v;},
@@ -277,12 +277,12 @@ await t('Verdrahtung: Kalman haelt waehrend der Umstellung', ()=>{
 });
 
 await t('Verdrahtung: Drift-Check pausiert waehrend der Umstellung', ()=>{
-  assert.ok(src.includes('activeStream && !clipStepInProgress && (frameCount-lastExposureCheckFrame)'),
+  assert.ok(src.includes('activeStream && !clipStepInProgress && exposureCheckTimer.due(timestamp)'),
     'Drift-Check laeuft waehrend der Umstellung - zaehlt die eigene Stufe als Drift');
 });
 
 await t('Verdrahtung: Manuell-Zweig regelt herunter, catch steht VOR then', ()=>{
-  assert.ok(src.includes('CLIP_ESCALATE_FRAMES&&!clipStepInProgress'),'Eskalation waehrend laufender Umstellung');
+  assert.ok(src.includes('clipEscalateDue&&!clipStepInProgress'),'Eskalation waehrend laufender Umstellung');
   const i=src.indexOf('stepDownExposureManual().catch(');
   assert.ok(i>0,'Manuell-Zweig ruft stepDownExposureManual nicht mit catch auf - ein Wurf liesse das Flag haengen');
   assert.ok(src.indexOf('.then(res=>',i)>i,'then fehlt nach dem catch');
@@ -290,13 +290,17 @@ await t('Verdrahtung: Manuell-Zweig regelt herunter, catch steht VOR then', ()=>
 
 console.log('== Schwaches Signal nach einer Clip-Stufe: Neustart-Hinweis (v3.4.16) ==');
 
-// Zaehlt Frames mit gegebenem Signal-Level, bis der Hinweis kommt (oder nicht).
-function frames(api,level,n){let fired=0;for(let i=0;i<n;i++) if(api.lowSignalAfterStep(level)) fired++;return fired;}
+// v3.4.19: Der Hinweis ist eine FRIST in Millisekunden. dauer() fuettert
+// lowSignalAfterStep() ueber `ms` Millisekunden im 60-Hz-Takt mit dem Level und
+// zaehlt, wie oft der Hinweis kam. TT laeuft ueber alle Tests monoton weiter
+// (jeder Test hat eine frische api, also einen frischen Timer).
+let TT=0;
+function dauer(api,level,ms,dt=1000/60){let fired=0;const ende=TT+ms;while(TT<ende){if(api.lowSignalAfterStep(level,TT)) fired++;TT+=dt;}return fired;}
 
 await t('Ohne vorherige Clip-Stufe: nie ein Hinweis, egal wie dunkel', async()=>{
   const {api}=manualSession();
   assert.strictEqual(api.clipSteppedDown,false,'Testaufbau');
-  assert.strictEqual(frames(api,'critical',10*api.LOW_AFTER_STEP_FRAMES),0,
+  assert.strictEqual(dauer(api,'critical',10*api.LOW_AFTER_STEP_MS),0,
     'Hinweis ohne Stufe - dunkle Szenen sind normale Messungen, kein Neustart-Grund');
 });
 
@@ -309,22 +313,32 @@ await t('Erfolgreiche Stufe schaltet scharf, gescheiterte nicht', async()=>{
   assert.strictEqual(nix.api.clipSteppedDown,false,'Belichtung unveraendert - kein Grund fuer den Hinweis');
 });
 
-await t('Hinweis genau nach LOW_AFTER_STEP_FRAMES schwachen Frames, nicht frueher', async()=>{
+await t('Hinweis genau nach LOW_AFTER_STEP_MS schwachen Signals, nicht frueher', async()=>{
   const {api}=manualSession();
   await api.stepDownExposureManual();
-  const N=api.LOW_AFTER_STEP_FRAMES;
-  assert.ok(N>=90,'Schwelle muss laenger sein als die Clip-Eskalation, ist '+N);
-  assert.strictEqual(frames(api,'low',N-1),0,'zu frueh');
-  assert.strictEqual(frames(api,'low',1),1,'beim N-ten Frame muss er kommen');
+  const N=api.LOW_AFTER_STEP_MS;
+  assert.ok(N>=api.CLIP_ESCALATE_MS,'Frist muss mindestens so lang sein wie die Clip-Eskalation, ist '+N);
+  assert.strictEqual(dauer(api,'low',N-100),0,'zu frueh');
+  assert.strictEqual(dauer(api,'low',200),1,'nach N ms muss er kommen');
+});
+
+await t('Hinweis-Frist haengt nicht vom Aufruftakt ab (30/60/120 Hz)', async()=>{
+  for(const hz of [30,60,120]){
+    const {api}=manualSession();
+    await api.stepDownExposureManual();
+    const N=api.LOW_AFTER_STEP_MS,dt=1000/hz;
+    assert.strictEqual(dauer(api,'low',N-2*dt,dt),0,hz+' Hz: zu frueh');
+    assert.strictEqual(dauer(api,'low',4*dt,dt),1,hz+' Hz: nach N ms muss er kommen');
+  }
 });
 
 await t('Ein guter Frame setzt zurueck: kurzes Vorbeischwenken loest nichts aus', async()=>{
   const {api}=manualSession();
   await api.stepDownExposureManual();
-  const N=api.LOW_AFTER_STEP_FRAMES;
+  const N=api.LOW_AFTER_STEP_MS;
   for(let r=0;r<5;r++){
-    assert.strictEqual(frames(api,'low',N-1),0,'Runde '+r);
-    assert.strictEqual(frames(api,'ok',1),0);
+    assert.strictEqual(dauer(api,'low',N-200),0,'Runde '+r);
+    assert.strictEqual(dauer(api,'ok',1000/60),0);
   }
   assert.strictEqual(api.lowAfterStepHintShown,false);
 });
@@ -332,23 +346,23 @@ await t('Ein guter Frame setzt zurueck: kurzes Vorbeischwenken loest nichts aus'
 await t('Kritisch zaehlt wie schwach', async()=>{
   const {api}=manualSession();
   await api.stepDownExposureManual();
-  assert.strictEqual(frames(api,'critical',api.LOW_AFTER_STEP_FRAMES),1);
+  assert.strictEqual(dauer(api,'critical',api.LOW_AFTER_STEP_MS+200),1);
 });
 
 await t('Nur einmal pro Stufe - eine neue Stufe schaltet wieder scharf', async()=>{
   const {api}=manualSession();
   await api.stepDownExposureManual();               // 160 -> 40
-  const N=api.LOW_AFTER_STEP_FRAMES;
-  assert.strictEqual(frames(api,'low',N),1);
-  assert.strictEqual(frames(api,'low',10*N),0,'wiederholt sich - Hinweis-Spam');
+  const N=api.LOW_AFTER_STEP_MS;
+  assert.strictEqual(dauer(api,'low',N+200),1);
+  assert.strictEqual(dauer(api,'low',10*N),0,'wiederholt sich - Hinweis-Spam');
   await api.stepDownExposureManual();               // 40 -> 10
-  assert.strictEqual(frames(api,'low',N),1,'neue Stufe hat nicht neu scharf geschaltet');
+  assert.strictEqual(dauer(api,'low',N+200),1,'neue Stufe hat nicht neu scharf geschaltet');
 });
 
 await t('Verdrahtung: processLoop ruft den Check, alle drei Resets raeumen den Zustand', ()=>{
-  assert.ok(src.includes('if(lowSignalAfterStep(signalStatus.level)) showError(LOW_AFTER_STEP_MSG);'),
+  assert.ok(src.includes('if(lowSignalAfterStep(signalStatus.level,timestamp)) showError(LOW_AFTER_STEP_MSG);'),
     'processLoop ruft lowSignalAfterStep nicht auf');
-  const resets=src.split('clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;').length-1;
+  const resets=src.split('clipStepInProgress=false;clipSteppedDown=false;lowAfterStepHintShown=false;clipEscalateTimer.reset();lowAfterStepTimer.reset();').length-1;
   assert.strictEqual(resets,3,'Kamerastart, Stopp und Auto-Rueckfall muessen den Zustand raeumen, gefunden: '+resets);
 });
 

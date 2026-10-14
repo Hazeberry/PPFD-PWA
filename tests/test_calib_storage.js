@@ -192,13 +192,17 @@ t('FSM-Aufruf reicht das Frisch-Signal durch', ()=>{
   assert.ok(m,'appFSM.update() nicht gefunden');
   const args=m[1].split(',').map(a=>a.trim());
   assert.strictEqual(args.length,5,'FSM-Aufruf hat '+args.length+' Argumente statt 5: '+m[1]);
-  assert.strictEqual(args[4],'flickerResultFresh','5. Argument ist nicht das Frisch-Signal: '+args[4]);
+  // v3.4.19: die FSM tickt im Zeittakt; das Frisch-Signal zaehlt nur im ERSTEN
+  // Tick eines Durchlaufs (sonst wuerde es bei mehreren Ticks mehrfach gezaehlt).
+  assert.strictEqual(args[4],'i===0&&flickerResultFresh','5. Argument ist nicht das Frisch-Signal im ersten Tick: '+args[4]);
 });
 
 t('Frisch-Signal wird gesetzt und direkt danach verbraucht', ()=>{
   const script=html.match(/<script>([\s\S]*)<\/script>/)[1];
   const ohneKommentare=script.split('\n').filter(z=>!/^\s*\/\//.test(z)).join('\n');
-  assert.ok(/flickerResultFresh\s*=\s*true/.test(ohneKommentare),
+  // v3.4.19: gesetzt wird das Signal aus flickerFeed() (flickerCtl.fresh), nicht
+  // mehr pauschal auf true - die Pausen-Zweige duerfen es nicht setzen.
+  assert.ok(/flickerResultFresh\s*=\s*(true|flickerCtl\.fresh)/.test(ohneKommentare),
     'wird nie gesetzt - der Akkumulator stuende dann fuer immer still');
   assert.ok(/flickerResultFresh\s*=\s*false/.test(ohneKommentare),
     'wird nie zurueckgesetzt - dann zaehlte wieder jeder Frame');
@@ -454,7 +458,8 @@ function messlage(){
   document.getElementById('trainDevice').value='TestPhone';
   api.settleTimer.reset(); api.toastLast=null;
 }
-const einschwingen=()=>{for(let i=0;i<api.settleTimer.warmupFrames;i++) api.settleTimer.update();};
+// v3.4.19: Einschwingen ist eine Frist in ms, kein Frame-Zaehler.
+const einschwingen=()=>{api.settleTimer.update(0);api.settleTimer.update(api.settleTimer.warmupMs);};
 
 t('REGRESSION: Kalibrieren waehrend des Einschwingens wird abgelehnt', ()=>{
   messlage();
@@ -490,6 +495,77 @@ t('Neustart der Kamera sperrt wieder (Einschwingen beginnt neu)', ()=>{
   messlage(); einschwingen(); api.settleTimer.reset();
   api.applyCalibration();
   assert.strictEqual(api.customCalibFactor,null);
+});
+
+console.log('== Speichertransaktion: Fehlschlag aendert nichts, meldet keinen Erfolg ==');
+
+// Storage-Fehler gezielt ausloesen und danach garantiert wiederherstellen.
+function mitDefektemStorage(modus,f){
+  const orig=localStorage.setItem;
+  localStorage.setItem=modus==='wirft'
+    ?()=>{const e=new Error('QuotaExceededError');e.name='QuotaExceededError';throw e;}
+    :()=>{/* schluckt still, speichert nichts (gesperrter/privater Modus) */};
+  try{f();}finally{localStorage.setItem=orig;}
+}
+// Ausgangslage: gueltiger Punkt 1 (raw 100 -> ref 200) plus alter Legacy-Eintrag.
+function mitBestehenderKalibrierung(){
+  messlage(); einschwingen();
+  api.applyCalibration();
+  store['ppfd_calib2_v1_user']=JSON.stringify({p1:{raw:50,ref:60},p2:null}); // Legacy
+  api.toastLast=null;
+  return {
+    key:api.calibStorageKey(),
+    gespeichert:store[api.calibStorageKey()],
+    slope:api.customCalibFactor,offset:api.calibOffset,punkte:api.calibPoints,
+    legacy:store['ppfd_calib2_v1_user']
+  };
+}
+function zweiterPunkt(){
+  api.currentRawPPFDUncalibrated=400;
+  document.getElementById('refPPFD').value='900';
+}
+
+for(const modus of ['wirft','still']){
+  t('Speicherfehler ('+modus+'): alte Kalibrierung bleibt in Storage UND Zustand', ()=>{
+    const vorher=mitBestehenderKalibrierung();
+    assert.strictEqual(vorher.punkte,1,'Ausgangslage: 1 Punkt');
+    zweiterPunkt();
+    mitDefektemStorage(modus,()=>api.applyCalibration());
+    assert.strictEqual(store[vorher.key],vorher.gespeichert,'gespeicherte Kalibrierung veraendert');
+    assert.strictEqual(store['ppfd_calib2_v1_user'],vorher.legacy,'Legacy-Eintrag trotz Fehlschlag geloescht');
+    assert.strictEqual(api.customCalibFactor,vorher.slope,'Steigung im Zustand ueberschrieben');
+    assert.strictEqual(api.calibOffset,vorher.offset,'Offset im Zustand ueberschrieben');
+    assert.strictEqual(api.calibPoints,vorher.punkte,'Punktezahl im Zustand ueberschrieben');
+    assert.strictEqual(api.calibP2,null,'p2 im Zustand uebernommen, obwohl nicht gespeichert');
+  });
+
+  t('Speicherfehler ('+modus+'): keine Erfolgsmeldung, stattdessen klare Fehlermeldung', ()=>{
+    mitBestehenderKalibrierung();
+    zweiterPunkt();
+    mitDefektemStorage(modus,()=>api.applyCalibration());
+    assert.ok(/nicht gespeichert/i.test(api.toastLast||''),'Meldung: '+api.toastLast);
+    assert.ok(!/Punkt 1 gespeichert/.test(api.toastLast||''),'Erfolgsmeldung trotz Fehlschlag');
+  });
+
+  t('Speicherfehler ('+modus+'): erste Kalibrierung ueberhaupt bleibt unkalibriert', ()=>{
+    messlage(); einschwingen();
+    mitDefektemStorage(modus,()=>api.applyCalibration());
+    assert.strictEqual(api.customCalibFactor,null,'Zustand kalibriert, Storage leer -> nach Neustart weg');
+    assert.strictEqual(api.calibPoints,0);
+    assert.strictEqual(store[api.calibStorageKey()],undefined);
+    assert.ok(/nicht gespeichert/i.test(api.toastLast||''),'Meldung: '+api.toastLast);
+  });
+}
+
+t('Nach behobenem Speicherfehler klappt dieselbe Kalibrierung wieder', ()=>{
+  const vorher=mitBestehenderKalibrierung();
+  zweiterPunkt();
+  mitDefektemStorage('wirft',()=>api.applyCalibration());
+  api.toastLast=null;
+  api.applyCalibration(); // Storage wieder in Ordnung
+  assert.strictEqual(api.calibPoints,2,'zweiter Punkt nicht uebernommen');
+  assert.notStrictEqual(store[vorher.key],vorher.gespeichert,'Storage nicht aktualisiert');
+  assert.strictEqual(store['ppfd_calib2_v1_user'],undefined,'Legacy-Eintrag nach Erfolg nicht entfernt');
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');

@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.18</title>
+<title>PPFD Meter Pro v3.4.19</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.18</span>
+  <span class="app-title">PPFD Meter Pro v3.4.19</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.18 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.19 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -449,15 +449,113 @@ class ClippingDetector {
 // war er nie (die Anzeige zeigt bis zum Ende '---'), er landete aber in
 // Kalibrierungen und Trainingspunkten, die waehrenddessen erhoben wurden.
 // Beides ist jetzt bis zum Ende des Einschwingens gesperrt (settled).
+// v3.4.19: Das Einschwingen ist eine FRIST, kein Frame-Zaehler. Bis v3.4.18
+// wurde pro Schleifendurchlauf (= Display-Refresh, 60/120 Hz) gezaehlt: 300
+// Durchlaeufe waren 5 s auf einem 60-Hz-, aber nur 2,5 s auf einem
+// 120-Hz-Display, und bei 30 Hz 10 s - unabhaengig davon, was die Kamera
+// tat. Jetzt in Millisekunden (5 s = die bisherigen 300 Durchlaeufe bei 60 Hz).
+const WARMUP_MS=5000;
 class SettleTimer {
-  constructor(){this.warmupFrames=300;this.framesCaptured=0;}
-  update(){
-    this.framesCaptured++;
-    const p=Math.min(100,(this.framesCaptured/this.warmupFrames)*100);
-    return{progress:p,isWarmedUp:this.framesCaptured>=this.warmupFrames};
+  constructor(){this.warmupMs=WARMUP_MS;this.startMs=null;this.nowMs=null;}
+  update(nowMs){
+    if(this.startMs===null) this.startMs=nowMs;
+    this.nowMs=nowMs;
+    const elapsed=nowMs-this.startMs;
+    return{progress:Math.min(100,Math.max(0,(elapsed/this.warmupMs)*100)),isWarmedUp:elapsed>=this.warmupMs};
   }
-  get settled(){return this.framesCaptured>=this.warmupFrames;}
-  reset(){this.framesCaptured=0;}
+  get settled(){return this.startMs!==null&&this.nowMs-this.startMs>=this.warmupMs;}
+  reset(){this.startMs=null;this.nowMs=null;}
+}
+
+// ===== v3.4.19: Kameraframes und Zeit getrennt ================================
+// processLoop() laeuft pro Display-Refresh (requestAnimationFrame, 60/120 Hz).
+// Das ist weder der Takt der Kamera (30/60 fps) noch eine Uhr. Bis v3.4.18
+// wurde trotzdem jeder Durchlauf wie ein neuer Kameraframe behandelt: bei
+// 120 Hz Display und 30 fps Kamera lief derselbe Frame ~4x durch Median,
+// Kalman und temporalen CV - Duplikate machen den CV kuenstlich klein (Q und
+// Unsicherheit zu optimistisch), das Median-Fenster N=5 fasste nur ~1,25 echte
+// Frames, und alle "Frames"-Fristen liefen mit dem Display statt mit der Zeit.
+// Seitdem gilt:
+//   KAMERAFRAMES (FrameGate) fuellen statistische Fenster: Median, Kalman,
+//     temporaler CV, Flicker-Zeilen, Pixel-Step. Ein Frame = eine Messung.
+//   ZEIT (ms) steuert Fristen: Einschwingen, Schwarzbild, Belichtungs-Check,
+//     Clip-Eskalation, Hinweis nach Clip-Stufe, FPS-Bestaetigung, UI-Takt und
+//     der FSM-Takt (FsmClock).
+// Alle Fristen unten sind aus den frueheren Frame-Schwellen bei 60 Hz
+// abgeleitet, sodass sich auf dem haeufigsten Geraet nichts verschiebt.
+class FrameGate {
+  constructor(){this.last=null;}
+  // token aendert sich genau dann, wenn die Kamera einen neuen Frame geliefert
+  // hat (requestVideoFrameCallback: presentedFrames, sonst video.currentTime).
+  // Ohne brauchbares Token laesst sich nichts unterscheiden: dann gilt jeder
+  // Aufruf als neu (altes Verhalten ist besser als eine stehende Messung).
+  isNew(token){
+    if(token===null||token===undefined||!Number.isFinite(token)) return true;
+    if(this.last!==null&&token===this.last) return false;
+    this.last=token;
+    return true;
+  }
+  reset(){this.last=null;}
+}
+// Geglaettete Rate aus Intervallen (EMA 0,15, Intervall auf 250 ms gedeckelt).
+function smoothRate(prev,deltaMs){
+  if(!(deltaMs>0)) return prev;
+  return prev*0.85+(1000/Math.min(deltaMs,250))*0.15;
+}
+// "Bedingung gilt seit mindestens ms" - jede Unterbrechung setzt zurueck.
+class DurationTimer {
+  constructor(ms){this.ms=ms;this.since=null;}
+  update(active,nowMs){
+    if(!active){this.since=null;return false;}
+    if(this.since===null) this.since=nowMs;
+    return nowMs-this.since>=this.ms;
+  }
+  reset(){this.since=null;}
+}
+// Periodische Frist. Der erste Aufruf scharf-schaltet nur (wie ein Zaehler,
+// der bei 0 startet), erst danach wird nach jeweils ms faellig.
+class IntervalTimer {
+  constructor(ms){this.ms=ms;this.last=null;}
+  due(nowMs){
+    if(this.last===null){this.last=nowMs;return false;}
+    if(nowMs-this.last>=this.ms){this.last=nowMs;return true;}
+    return false;
+  }
+  reset(){this.last=null;}
+}
+// Fester Takt fuer die Zustandsmaschine: ihre Akkumulatoren (CLIP_ENTER=5,
+// PERF_ENTER=45) zaehlen Ticks. 1 Tick = 1/60 s, damit 5 Ticks = 83 ms und 45
+// Ticks = 750 ms bleiben wie bei 60 Hz - jetzt aber auf jedem Display.
+// Nach einer langen Pause (Hintergrund-Throttling) wird nicht nachgeholt.
+const FSM_TICK_MS=1000/60,FSM_MAX_TICKS=15;
+class FsmClock {
+  constructor(tickMs=FSM_TICK_MS){this.tickMs=tickMs;this.last=null;}
+  ticks(nowMs,max=FSM_MAX_TICKS){
+    if(this.last===null||nowMs<this.last){this.last=nowMs;return 0;}
+    const n=Math.floor((nowMs-this.last)/this.tickMs);
+    if(n<=0) return 0;
+    if(n>max){this.last=nowMs;return max;}
+    this.last+=n*this.tickMs;
+    return n;
+  }
+  reset(){this.last=null;}
+}
+// FPS-Zuverlaessigkeit der Flicker-Erkennung: unzuverlaessig erst, wenn die
+// Rate FPS_CONFIRM_MS am Stueck unter low liegt; ueber high sofort wieder
+// zuverlaessig; im Totband bleibt der Zustand.
+class FpsReliability {
+  constructor(low,high,confirmMs){this.low=low;this.high=high;this.ms=confirmMs;this.reliable=true;this.lowSince=null;}
+  update(fps,nowMs){
+    if(fps<this.low){
+      if(this.lowSince===null) this.lowSince=nowMs;
+      if(nowMs-this.lowSince>=this.ms) this.reliable=false;
+    }else{
+      this.lowSince=null;
+      if(fps>this.high) this.reliable=true;
+    }
+    return this.reliable;
+  }
+  reset(){this.reliable=true;this.lowSince=null;}
 }
 
 class AppStatusStateMachine {
@@ -516,6 +614,23 @@ class AppStatusStateMachine {
     return this.current;
   }
   reset(){this.current=this.STATES.WARMUP;this.acc={flicker:0,clipping:0,perf:0};}
+}
+
+// v3.4.19: Was tut der 1-Hz-Flicker-Block in diesem Durchlauf? Herausgezogen,
+// damit die Entscheidung testbar ist (processLoop haengt an Video und Canvas).
+//   pause: null = es wird wirklich gemessen; sonst der Grund, warum nicht
+//          ('cpu-limit' | 'dark' | 'step').
+//   fresh: ob der Durchlauf ein NEUES Detektionsergebnis fuer die FSM liefert.
+const FLICKER_MIN_Y_GAMMA=20,FLICKER_DETECT_STEP=4;
+function flickerFeed(reliable,yMeanGamma,pixelStep){
+  let pause=null;
+  if(!reliable) pause='cpu-limit';
+  else if(yMeanGamma<FLICKER_MIN_Y_GAMMA) pause='dark';
+  else if(pixelStep!==FLICKER_DETECT_STEP) pause='step';
+  // Pause = es wurde nicht gemessen = keine Information. Kein frisches Ergebnis,
+  // der Akkumulator haelt (weder Auf- noch Abbau). Beendet wird eine Warnung
+  // nur durch echte, saubere Detektionen.
+  return{pause,fresh:pause===null};
 }
 
 // v3.3.17 (Review/Tin): Herkunft dokumentiert. Die Kanal-Gewichte sind
@@ -812,7 +927,10 @@ let isStarting=false;
 let lastAiUpdate=0,hardwareSettings=null,useSoftwareGain=false;
 let wbManual=false;
 let customCalibFactor=null,activeStream=null,currentRawPPFD=0,currentRawPPFDUncalibrated=0,frameCount=0,animationFrameId=null;
-let blackFrameCount=0,blackFrameStage=0;
+// v3.4.19: Schwarzbild-Erkennung als Frist (1,5 s = die bisherigen 90 Durchlaeufe bei 60 Hz).
+const BLACK_FRAME_MS=1500;
+let blackFrameStage=0;
+const blackFrameTimer=new DurationTimer(BLACK_FRAME_MS);
 let blackLevelMeasuring=false;
 let wakeLock=null;
 async function acquireWakeLock(){
@@ -857,10 +975,11 @@ function newSessionId(){
   }catch(e){}
   return Math.random().toString(16).slice(2,10);
 }
-let exposureDriftStrikes=0,lastExposureCheckFrame=0,exposureLockBaseline=null;
-let lastSwPollFrame=0;
-const EXPOSURE_CHECK_INTERVAL=60,EXPOSURE_DRIFT_THRESHOLD=0.15,EXPOSURE_DRIFT_STRIKES_LIMIT=3;
-let clipCriticalFrames=0,clipEvApplied=false,clipHintShown=false;
+// v3.4.19: Belichtungs-Check als Frist (1 s = die bisherigen 60 Durchlaeufe bei 60 Hz).
+let exposureDriftStrikes=0,exposureLockBaseline=null;
+const EXPOSURE_CHECK_MS=1000,EXPOSURE_DRIFT_THRESHOLD=0.15,EXPOSURE_DRIFT_STRIKES_LIMIT=3;
+const exposureCheckTimer=new IntervalTimer(EXPOSURE_CHECK_MS),swPollTimer=new IntervalTimer(EXPOSURE_CHECK_MS);
+let clipEvApplied=false,clipHintShown=false;
 // v3.4.14: true, solange stepDownExposureManual() die Belichtung umstellt.
 // Haelt in der Zeit den Kalman an und setzt den Drift-Check aus (s. dort).
 let clipStepInProgress=false;
@@ -877,13 +996,15 @@ let clipStepInProgress=false;
 // einmal pro Stufe. 180 Frames (3 s bei 60 fps) sind bewusst laenger als die
 // 90 der Clip-Eskalation: kurzes Vorbeischwenken an einer dunklen Stelle soll
 // nichts ausloesen, ein einziger guter Frame setzt den Zaehler zurueck.
-let clipSteppedDown=false,lowAfterStepFrames=0,lowAfterStepHintShown=false;
-const LOW_AFTER_STEP_FRAMES=180;
+// v3.4.19: als Frist (3 s) statt 180 Durchlaeufe - ein einziger guter Frame
+// setzt die Frist weiterhin zurueck.
+let clipSteppedDown=false,lowAfterStepHintShown=false;
+const LOW_AFTER_STEP_MS=3000;
+const lowAfterStepTimer=new DurationTimer(LOW_AFTER_STEP_MS);
 const LOW_AFTER_STEP_MSG='Signal schwach – die Belichtung wurde vorhin wegen Übersteuerung gekürzt. Für dunklere Stellen Kamera neu starten, dann wird sie neu eingestellt.';
-function lowSignalAfterStep(level){
+function lowSignalAfterStep(level,nowMs){
   if(!clipSteppedDown||lowAfterStepHintShown) return false;
-  if(level==='ok'){lowAfterStepFrames=0;return false;}
-  if(++lowAfterStepFrames<LOW_AFTER_STEP_FRAMES) return false;
+  if(!lowAfterStepTimer.update(level!=='ok',nowMs)) return false;
   lowAfterStepHintShown=true;
   return true;
 }
@@ -893,7 +1014,9 @@ function lowSignalAfterStep(level){
 // dass eine tote Schleife nicht minutenlang eine eingefrorene Zahl anzeigt.
 let canvasFailStreak=0;
 const CANVAS_FAIL_LIMIT=30;
-const CLIP_ESCALATE_FRAMES=90;
+// v3.4.19: Clip-Eskalation als Frist (1,5 s = die bisherigen 90 Durchlaeufe bei 60 Hz).
+const CLIP_ESCALATE_MS=1500;
+const clipEscalateTimer=new DurationTimer(CLIP_ESCALATE_MS);
 const CALIB_KEY='ppfd_calibFactor_v2';
 // v3.4.0: Zwei-Punkt-Kalibrierung. Neuer Storage (JSON {p1,p2} pro Kamera);
 // der Legacy-Faktor (CALIB_KEY) bleibt als reine Steigung lesbar und wird
@@ -976,10 +1099,62 @@ loadCalib(); // v3.4.0: bevorzugt Zwei-Punkt-Storage, Legacy-Faktor als Fallback
 let blackLevelLin=0;
 blackLevelLin=loadBlackLevel();
 
+// v3.4.19: zwei Raten, die bis v3.4.18 eine waren.
+//   smoothedFps = Takt der Schleife (Display-Refresh): misst, ob die CPU
+//     mithaelt (CPU-Limit, FSM, Flicker-Zuverlaessigkeit).
+//   cameraFps   = Takt NEUER Kameraframes: die Rate, die die Flicker-Analyse
+//     braucht und die der Nutzer als "fps" versteht.
 let lastFrameTime=0,smoothedFps=30;
+let lastCameraFrameTime=0,cameraFps=30;
+const frameGate=new FrameGate(),fsmClock=new FsmClock(),uiRefreshTimer=new IntervalTimer(500);
 let pixelStep=4,stepTransitionAccum=0;
-let flickerReliable=true,lowFpsFrameCount=0;
-const FPS_THRESHOLD_LOW=15,FPS_THRESHOLD_HIGH=20,FPS_CONFIRM_FRAMES=10;
+let flickerReliable=true;
+const FPS_THRESHOLD_LOW=15,FPS_THRESHOLD_HIGH=20,FPS_CONFIRM_MS=170;
+const fpsReliability=new FpsReliability(FPS_THRESHOLD_LOW,FPS_THRESHOLD_HIGH,FPS_CONFIRM_MS);
+// v3.4.19: eine Quelle fuer "kam ein neuer Kameraframe?". Bevorzugt
+// requestVideoFrameCallback (presentedFrames zaehlt echte Frames), sonst
+// video.currentTime. Die Callback-Kette ist an den Stream ihrer Sitzung
+// gebunden: ein Rest-Callback einer frueheren Kamera darf das Token der neuen
+// Sitzung nicht beruehren.
+let videoFrameToken=null,videoFrameCbId=null,videoFrameCbStream=null,videoFrameSince=null;
+// Solange die Callback-Quelle noch keinen Frame gemeldet hat, gilt "noch kein
+// Frame" (nicht "neu"). Kommt innerhalb der Karenzzeit keiner - manche
+// Browser/Stream-Kombinationen feuern den Callback nie -, faellt die Quelle
+// auf video.currentTime zurueck, statt die Messung stehen zu lassen.
+const FRAME_PENDING=Symbol('frame-pending'),RVFC_GRACE_MS=1000;
+function startFrameSource(stream){
+  stopFrameSource();
+  videoFrameCbStream=stream;
+  if(typeof video.requestVideoFrameCallback!=='function') return;
+  const cb=(now,meta)=>{
+    if(videoFrameCbStream!==stream||activeStream!==stream) return;
+    if(meta&&Number.isFinite(meta.presentedFrames)) videoFrameToken=meta.presentedFrames;
+    videoFrameCbId=video.requestVideoFrameCallback(cb);
+  };
+  videoFrameCbId=video.requestVideoFrameCallback(cb);
+}
+function stopFrameSource(){
+  if(videoFrameCbId!==null&&typeof video.cancelVideoFrameCallback==='function'){try{video.cancelVideoFrameCallback(videoFrameCbId);}catch(e){}}
+  videoFrameCbId=null;videoFrameCbStream=null;videoFrameToken=null;videoFrameSince=null;
+}
+function currentFrameToken(nowMs){
+  if(videoFrameCbId!==null){
+    if(videoFrameToken!==null) return videoFrameToken;
+    if(videoFrameSince===null) videoFrameSince=nowMs;
+    if(nowMs-videoFrameSince<RVFC_GRACE_MS) return FRAME_PENDING;
+    // Der Callback liefert nichts: abmelden und auf currentTime zurueckfallen.
+    if(typeof video.cancelVideoFrameCallback==='function'){try{video.cancelVideoFrameCallback(videoFrameCbId);}catch(e){}}
+    videoFrameCbId=null;videoFrameCbStream=null;
+  }
+  return video.currentTime;
+}
+// Alle Zeit- und Frame-Zustaende einer Messsitzung auf Anfang.
+function resetFrameClock(){
+  frameGate.reset();fsmClock.reset();uiRefreshTimer.reset();
+  blackFrameTimer.reset();exposureCheckTimer.reset();swPollTimer.reset();
+  clipEscalateTimer.reset();lowAfterStepTimer.reset();fpsReliability.reset();
+  lastFrameTime=0;lastCameraFrameTime=0;
+}
 let lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
 // v3.4.5: Wird gesetzt, sobald der 1-Hz-Block ein NEUES Flicker-Ergebnis
 // erzeugt hat, und von der FSM-Aktualisierung wieder verbraucht. Ohne dieses
@@ -1514,7 +1689,19 @@ function applyCalibration(){
   // wird dabei entfernt - sonst bliebe er als stiller Fallback fuer alle
   // anderen Profile liegen und genau der Fehler, der hier behoben wird,
   // bestuende fuer sie weiter.
-  try{localStorage.setItem(calibStorageKey(),JSON.stringify(d));}catch(e){}
+  // v3.4.19: Speichern ist eine Transaktion. Erst schreiben UND zuruecklesen
+  // (ein Storage, das still nichts speichert, wirft nicht); nur wenn der neue
+  // Stand nachweislich liegt, werden Legacy-Eintraege entfernt, der Zustand
+  // uebernommen und Erfolg gemeldet. Bis v3.4.18 wurde der Fehler
+  // verschluckt: Der alte Eintrag ging verloren, die Anzeige zeigte die neue
+  // Kalibrierung, und nach dem naechsten Start war sie weg.
+  const calibKey=calibStorageKey(),calibJson=JSON.stringify(d);
+  let gespeichert=false;
+  try{localStorage.setItem(calibKey,calibJson);gespeichert=(localStorage.getItem(calibKey)===calibJson);}catch(e){gespeichert=false;}
+  if(!gespeichert){
+    showError('Kalibrierung NICHT gespeichert (Speicher voll oder gesperrt). Die bisherige Kalibrierung bleibt unverändert.');
+    return;
+  }
   try{localStorage.removeItem(calibLegacyKey());}catch(e){}
   try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);}catch(e){} // Legacy-Faktor ersetzt
   customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;
@@ -1685,6 +1872,25 @@ async function toggleCamera(){
   if(isMeasuring){stopCamera();await startCamera();}
 }
 
+// v3.4.19: Wird die Kamera von aussen beendet (abgesteckt, Berechtigung
+// entzogen, von einer anderen App belegt), feuert 'ended' am Track. Ohne
+// Handler friert die Anzeige still auf dem letzten Wert ein.
+// Das Ereignis gehoert zu SEINEM Stream. Kommt es verspaetet von einer
+// frueheren Kamera (Kamerawechsel, Neustart), darf es die NEUE Messsitzung
+// nicht beenden - sonst stoppt eine laengst abgeraeumte Kamera die laufende.
+const STREAM_ENDED_MSG='Kamera wurde beendet (getrennt oder von einer anderen App belegt) – Messung gestoppt. Kamera neu starten.';
+function onStreamEnded(stream){
+  if(stream!==activeStream) return; // Ereignis einer frueheren Kamera
+  if(!isMeasuring) return;          // selbst beendet, oder Start laeuft noch (dort greift der Watchdog)
+  stopCamera();
+  showError(STREAM_ENDED_MSG);
+}
+function watchStreamEnd(stream){
+  for(const track of stream.getTracks()){
+    if(typeof track.addEventListener==='function') track.addEventListener('ended',()=>onStreamEnded(stream));
+  }
+}
+
 async function startCamera(){
   if(isMeasuring||activeStream||isStarting) return;
   isStarting=true;
@@ -1727,6 +1933,7 @@ async function startCamera(){
     setStep('1/4 Kamera anfragen...');
     activeStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:cameraFacing},width:{ideal:PROC_W},height:{ideal:PROC_H}}});
     myStream=activeStream; // v3.3.16: an diesen Versuch binden (s. abortCleanup oben)
+    watchStreamEnd(myStream); // v3.4.19: Ende der Kamera von aussen erkennen (an DIESEN Stream gebunden)
     const watchdog=new Promise((_,reject)=>{wdTimer=setTimeout(()=>reject(new Error('watchdog-timeout')),15000);});
     await Promise.race([(async()=>{
     if(startAborted){abortCleanup();return;}
@@ -1746,9 +1953,9 @@ async function startCamera(){
       });
     }finally{videoReadyAC.abort();}
     if(startAborted){abortCleanup();return;}
-    blackFrameStage=0;blackFrameCount=0;exposureDriftStrikes=0;lastExposureCheckFrame=0;exposureLockBaseline=null;
-    lastSwPollFrame=0;
-    clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
+    blackFrameStage=0;exposureDriftStrikes=0;exposureLockBaseline=null;
+    clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepHintShown=false;clipEscalateTimer.reset();lowAfterStepTimer.reset();
+    resetFrameClock();
     setStep('3/4 Belichtung einstellen...');
     hardwareSettings=await applyHardwareConstraints(activeStream);
     if(startAborted){abortCleanup();return;}
@@ -1776,18 +1983,19 @@ async function startCamera(){
     kalman.r=hardwareSettings.constraintsApplied?2.5:8.0;
     kalman.reset(); // v3.4.6: dieselbe Methode wie revertToAutoExposure() - beide Pfade duerfen nicht auseinanderlaufen
     settleTimer.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
-    frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
+    frameCount=0;smoothedFps=hardwareSettings.frameRate||30;cameraFps=hardwareSettings.frameRate||30;
     canvasFailStreak=0; // v3.4.6: sonst startet eine neue Sitzung mit dem Reststand der alten
     currentSessionId=newSessionId(); // v3.4.8: neuer Aufbau => neue Gruppe (s. TRAINDATA_KEY)
     pixelStep=4;stepTransitionAccum=0;
     lastFlickerResult={isFlickering:false,modulation:"0.0",freq:"N/A"};
     flickerResultFresh=false;
-    flickerReliable=true;lowFpsFrameCount=0;
+    flickerReliable=true;
     setButtonState('measuring');
     document.getElementById('statusDot').classList.add('active');
     isMeasuring=true;
     await acquireWakeLock();
     if(startAborted){abortCleanup();isMeasuring=false;return;}
+    startFrameSource(activeStream);
     animationFrameId=requestAnimationFrame(processLoop);
     })(),watchdog]);
   }catch(err){
@@ -1806,14 +2014,14 @@ async function startCamera(){
 function stopCamera(){
   isMeasuring=false;
   releaseWakeLock();
-  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
-  blackFrameCount=0;blackFrameStage=0;exposureDriftStrikes=0;lastExposureCheckFrame=0;exposureLockBaseline=null;
-  lastSwPollFrame=0;
+  clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepHintShown=false;clipEscalateTimer.reset();lowAfterStepTimer.reset();
+  blackFrameStage=0;exposureDriftStrikes=0;exposureLockBaseline=null;
+  resetFrameClock();stopFrameSource();
   if(animationFrameId){cancelAnimationFrame(animationFrameId);animationFrameId=null;}
   if(activeStream){activeStream.getTracks().forEach(t=>t.stop());activeStream=null;}
   if(video.srcObject) video.srcObject=null;
-  lastFrameTime=0;smoothedFps=30;pixelStep=4;stepTransitionAccum=0;
-  flickerReliable=true;lowFpsFrameCount=0;
+  smoothedFps=30;cameraFps=30;pixelStep=4;stepTransitionAccum=0;
+  flickerReliable=true;
   setButtonState('idle');
   document.getElementById('statusDot').className='status-dot';
   document.getElementById('warmupOverlay').classList.remove('active');
@@ -1955,7 +2163,7 @@ async function stepDownExposureManual(){
   temporalStats.reset();ppfdMedian.reset();
   // v3.4.16: Hinweis "Signal schwach nach Belichtungskorrektur" fuer diese
   // Stufe scharf schalten (s. lowSignalAfterStep).
-  clipSteppedDown=true;lowAfterStepFrames=0;lowAfterStepHintShown=false;
+  clipSteppedDown=true;lowAfterStepTimer.reset();lowAfterStepHintShown=false;
   return {ok:true,from:cur,to:live};
 }
 
@@ -1966,7 +2174,7 @@ async function revertToAutoExposure(reason){
   }catch(e){console.warn('Auto-Revert fehlgeschlagen:',e);}
   if(hardwareSettings){hardwareSettings.constraintsApplied=false;hardwareSettings.fallbackMode=reason||'auto-revert';}
   useSoftwareGain=true;
-  clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
+  clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepHintShown=false;clipEscalateTimer.reset();lowAfterStepTimer.reset();
   document.getElementById('gainControl').classList.add('visible');
   // v3.3.13 FIX (Review): Slider-Knopf mit dem tatsächlichen Gain
   // synchronisieren - der DOM-Wert konnte noch aus einer früheren Session
@@ -1980,7 +2188,7 @@ async function revertToAutoExposure(reason){
   // der Schaetzzustand blieb stehen. Zwei messbare Folgen:
   //
   // 1) Kalman: waehrend des Warmups wird update() gar nicht aufgerufen (die
-  //    Anzeige zeigt '–––'), das alte x ueberlebt also die vollen 300 Frames
+  //    Anzeige zeigt '–––'), das alte x ueberlebt also die volle Einschwingzeit
   //    unangetastet. Danach startet die Schaetzung beim ALTEN Wert. Simuliert
   //    mit eingeschwungenem x=600 und neuem Ist-Wert 200: erster angezeigter
   //    Wert 589 (194% daneben), 5% Restfehler erst nach 79 Frames (~2,6s bei
@@ -2008,24 +2216,16 @@ function processLoop(timestamp){
   if(!isMeasuring) return;
   if(!activeStream||!video.srcObject){stopCamera();return;}
   if(video.readyState<2){animationFrameId=requestAnimationFrame(processLoop);return;}
-  frameCount++;
-
-  if(lastFrameTime>0){
-    const deltaMs=Math.min(timestamp-lastFrameTime,250);
-    if(deltaMs>0){smoothedFps=smoothedFps*0.85+(1000/deltaMs)*0.15;}
-  }
+  // v3.4.19: ZWEI Takte in einer Schleife (s. FrameGate).
+  // 1) Zeitbasis - jeder Durchlauf, also im Takt des Displays: Schleifenrate
+  //    und daraus die FPS-Zuverlaessigkeit. Fristen werden unten mit
+  //    `timestamp` in Millisekunden gerechnet, nie in Durchlaeufen.
+  if(lastFrameTime>0) smoothedFps=smoothRate(smoothedFps,timestamp-lastFrameTime);
   lastFrameTime=timestamp;
-  const nominalFps=hardwareSettings?.frameRate||smoothedFps;
-
-  if(smoothedFps<FPS_THRESHOLD_LOW){lowFpsFrameCount=Math.min(lowFpsFrameCount+1,FPS_CONFIRM_FRAMES);}
-  else if(smoothedFps>FPS_THRESHOLD_HIGH){lowFpsFrameCount=Math.max(lowFpsFrameCount-1,0);}
-  flickerReliable=lowFpsFrameCount<FPS_CONFIRM_FRAMES;
-
-  if(frameCount%30===0){
-    document.getElementById('fpsVal').textContent=smoothedFps.toFixed(1)+' fps';
-    document.getElementById('stepVal').textContent=pixelStep+'×';
-    document.getElementById('uniformityVal').textContent=lastUniformityCV===null?'–':(lastUniformityCV*100).toFixed(1)+' %';
-  }
+  flickerReliable=fpsReliability.update(smoothedFps,timestamp);
+  // Das Einschwingen ist eine Frist: sie startet mit der Messung und endet auf
+  // die Millisekunde, nicht erst beim naechsten verarbeiteten Kameraframe.
+  const settleStatus=settleTimer.update(timestamp);
 
   // v3.3.11 FIX (Review): Während measureBlackLevel() läuft, würden sonst
   // die gezielt abgedeckten (künstlich dunklen) Frames in Kalman,
@@ -2037,6 +2237,22 @@ function processLoop(timestamp){
   // Frame-Analyse pro Frame während der Messung und hält auch die
   // FPS-/Uniformitäts-Anzeige von den Dunkel-Frames sauber.
   if(blackLevelMeasuring){animationFrameId=requestAnimationFrame(processLoop);return;}
+
+  // 2) Kameraframes - nur ein NEUER Frame darf Median, Kalman, temporalen CV,
+  //    Flicker-Zeilen und Pixel-Step fuettern. Ein Durchlauf ohne neuen Frame
+  //    wartet nur auf den naechsten Display-Refresh.
+  const frameToken=currentFrameToken(timestamp);
+  if(frameToken===FRAME_PENDING||!frameGate.isNew(frameToken)){animationFrameId=requestAnimationFrame(processLoop);return;}
+  frameCount++; // ab hier: verarbeitete KAMERAFRAMES
+  if(lastCameraFrameTime>0) cameraFps=smoothRate(cameraFps,timestamp-lastCameraFrameTime);
+  lastCameraFrameTime=timestamp;
+  const nominalFps=hardwareSettings?.frameRate||cameraFps;
+
+  if(uiRefreshTimer.due(timestamp)){
+    document.getElementById('fpsVal').textContent=cameraFps.toFixed(1)+' fps';
+    document.getElementById('stepVal').textContent=pixelStep+'×';
+    document.getElementById('uniformityVal').textContent=lastUniformityCV===null?'–':(lastUniformityCV*100).toFixed(1)+' %';
+  }
 
   pixelStep=updatePixelStep(pixelStep,kalman.innovation);
 
@@ -2078,20 +2294,17 @@ function processLoop(timestamp){
   const clippingPixels=frame.clippingPixels,sampledPixels=frame.sampledPixels;
   lastUniformityCV=frame.uniformity.cv;
 
-  if(yMean_gamma===0){
-    blackFrameCount++;
-    if(blackFrameCount>=90){
-      if(blackFrameStage===0&&hardwareSettings?.constraintsApplied){blackFrameStage=1;blackFrameCount=0;revertToAutoExposure('black-frame');showError('Sensor lieferte Schwarzbild im Manuell-Modus – automatisch auf Auto-Belichtung umgeschaltet.');}
-      else if(blackFrameStage<2){blackFrameStage=2;showError('Keine Bilddaten vom Sensor (dauerhaft Schwarzbild). Kamera neu starten oder anderes Gerät testen.');}
-    }
-  }else{blackFrameCount=0;}
+  // v3.4.19: Frist (BLACK_FRAME_MS) statt 90 Zaehler-Schritte.
+  if(blackFrameTimer.update(yMean_gamma===0,timestamp)){
+    if(blackFrameStage===0&&hardwareSettings?.constraintsApplied){blackFrameStage=1;blackFrameTimer.reset();revertToAutoExposure('black-frame');showError('Sensor lieferte Schwarzbild im Manuell-Modus – automatisch auf Auto-Belichtung umgeschaltet.');}
+    else if(blackFrameStage<2){blackFrameStage=2;showError('Keine Bilddaten vom Sensor (dauerhaft Schwarzbild). Kamera neu starten oder anderes Gerät testen.');}
+  }
 
   // v3.4.14: waehrend einer absichtlichen Belichtungs-Stufe aussetzen - der
   // Check saehe die 4x-Aenderung als Drift und schaltete auf Auto zurueck.
-  // lastExposureCheckFrame bleibt dabei stehen, der Check laeuft also direkt
-  // nach der Umstellung gegen die neue Baseline.
-  if(hardwareSettings?.constraintsApplied && activeStream && !clipStepInProgress && (frameCount-lastExposureCheckFrame)>=EXPOSURE_CHECK_INTERVAL){
-    lastExposureCheckFrame=frameCount;
+  // exposureCheckTimer wird in der Zeit nicht befragt, bleibt also stehen: der
+  // Check laeuft direkt nach der Umstellung gegen die neue Baseline.
+  if(hardwareSettings?.constraintsApplied && activeStream && !clipStepInProgress && exposureCheckTimer.due(timestamp)){
     const track=activeStream.getVideoTracks()[0];
     if(track){
       const liveSettings=track.getSettings();
@@ -2115,8 +2328,7 @@ function processLoop(timestamp){
     }
   }
 
-  if(hardwareSettings&&!hardwareSettings.constraintsApplied&&activeStream&&(frameCount-lastSwPollFrame)>=EXPOSURE_CHECK_INTERVAL){
-    lastSwPollFrame=frameCount;
+  if(hardwareSettings&&!hardwareSettings.constraintsApplied&&activeStream&&swPollTimer.due(timestamp)){
     const swTrack=activeStream.getVideoTracks()[0];
     if(swTrack){
       const swSet=swTrack.getSettings();
@@ -2158,11 +2370,13 @@ function processLoop(timestamp){
     yMeanLin:yMean_lin
   });
 
+  // v3.4.19: Frist statt Frame-Zaehler; jede Unterbrechung (ein Frame unter
+  // "critical") setzt sie selbst zurueck.
+  const clipEscalateDue=clipEscalateTimer.update(clipStatus.level==='critical',timestamp);
   if(clipStatus.level==='critical'){
-    clipCriticalFrames++;
     // v3.4.14: nicht eskalieren, waehrend eine Umstellung noch laeuft.
-    if(clipCriticalFrames>=CLIP_ESCALATE_FRAMES&&!clipStepInProgress){
-      clipCriticalFrames=0;
+    if(clipEscalateDue&&!clipStepInProgress){
+      clipEscalateTimer.reset();
       if(useSoftwareGain&&!clipEvApplied){
         clipEvApplied=true;
         applyAntiClippingEV().then(ok=>{
@@ -2171,7 +2385,7 @@ function processLoop(timestamp){
       }else if(!useSoftwareGain&&hardwareSettings?.constraintsApplied){
         // v3.4.14: Manuell-Modus regelt eine Stufe herunter (s.
         // stepDownExposureManual). Haelt das Clipping danach weiter an,
-        // greift nach weiteren CLIP_ESCALATE_FRAMES die naechste Stufe; erst
+        // greift nach weiteren CLIP_ESCALATE_MS die naechste Stufe; erst
         // am Treiber-Minimum oder wenn der Treiber nicht mitgeht, kommt der
         // Hinweis auf Diffusor/Abstand - dann hilft nur noch Physik.
         const stream=activeStream;
@@ -2200,13 +2414,10 @@ function processLoop(timestamp){
         showError(CLIP_HINT_MSG);
       }
     }
-  }else{
-    clipCriticalFrames=0;
   }
   // v3.4.16: dauerhaft schwaches Signal nach einer Clip-Stufe -> Neustart-Hinweis.
-  if(lowSignalAfterStep(signalStatus.level)) showError(LOW_AFTER_STEP_MSG);
+  if(lowSignalAfterStep(signalStatus.level,timestamp)) showError(LOW_AFTER_STEP_MSG);
 
-  const settleStatus=settleTimer.update();
   if(!settleStatus.isWarmedUp){
     document.getElementById('warmupOverlay').classList.add('active');
     document.getElementById('warmupFill').style.width=settleStatus.progress+'%';
@@ -2236,19 +2447,21 @@ function processLoop(timestamp){
 
     const fe=document.getElementById('flickerWarning');
     const fv=document.getElementById('flickerVal');
-    if(!flickerReliable){fv.textContent='CPU-Limit';fv.style.color='var(--muted)';fe.style.display='none';lastFlickerResult.isFlickering=false;}
-    else if(yMean_gamma<20){fv.textContent='Zu dunkel';fv.style.color='var(--muted)';fe.style.display='none';lastFlickerResult.isFlickering=false;}
-    else if(pixelStep!==4){fv.textContent='Pausiert (8×)';fv.style.color='var(--muted)';fe.style.display='none';lastFlickerResult.isFlickering=false;}
-    else{
+    const flickerCtl=flickerFeed(flickerReliable,yMean_gamma,pixelStep);
+    if(flickerCtl.pause){
+      const pauseLabels={'cpu-limit':'CPU-Limit','dark':'Zu dunkel','step':'Pausiert (8×)'};
+      fv.textContent=pauseLabels[flickerCtl.pause];fv.style.color='var(--muted)';fe.style.display='none';lastFlickerResult.isFlickering=false;
+    }else{
       lastFlickerResult=flickerDetector.detect(rowAverages,nominalFps);
       if(lastFlickerResult.isFlickering){fe.style.display='block';fe.textContent=`⚠️ FLICKER: ${lastFlickerResult.modulation}% Modulation (${lastFlickerResult.freq})`;fv.textContent='WARNUNG';fv.style.color='var(--amber)';}
       else{fe.style.display='none';fv.textContent='Stabil';fv.style.color='var(--green)';}
     }
-    // v3.4.5: Jeder Zweig oben hat lastFlickerResult entschieden - auch die
-    // Pausen-Zweige ("CPU-Limit", "Zu dunkel", "Pausiert (8x)"), die bewusst
-    // auf false setzen. Alle sind ein gueltiges neues Ergebnis, der
-    // Akkumulator soll also in jedem Fall genau EINEN Schritt machen.
-    flickerResultFresh=true;
+    // v3.4.5: Der Akkumulator zaehlt Detektionen, nicht Frames - pro Durchlauf
+    // hoechstens ein Schritt. v3.4.19: Die Pausen-Zweige ("CPU-Limit", "Zu
+    // dunkel", "Pausiert (8x)") haben nicht gemessen und liefern deshalb KEIN
+    // frisches Ergebnis (flickerFeed): der Zustand wird gehalten, statt eine
+    // laufende Warnung mit "kein Flicker" abzubauen.
+    flickerResultFresh=flickerCtl.fresh;
     lastAiUpdate=timestamp;
   }
 
@@ -2332,8 +2545,15 @@ function processLoop(timestamp){
   // Werte waeren um den Stufenfaktor falsch und duerfen nicht in den Kalman.
   const holdKalman=isClipping||!qGateOpen||clipStepInProgress;
   const displayPPFD=settleStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
-  const state=appFSM.update(settleStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
-  flickerResultFresh=false; // verbraucht - bis zum naechsten 1-Hz-Block ruht der Flicker-Akkumulator
+  // v3.4.19: Die FSM tickt im festen Zeittakt (FsmClock, 1 Tick = 1/60 s),
+  // nicht pro Frame oder Display-Durchlauf. Ein neuer Frame holt die seit dem
+  // letzten Frame faelligen Ticks nach, mit dem aktuellen Befund. Das frische
+  // Flicker-Ergebnis zaehlt im ERSTEN Tick und wird erst verbraucht, wenn
+  // wirklich getickt wurde - bei 0 Ticks bleibt es fuer den naechsten Frame.
+  const fsmTicks=fsmClock.ticks(timestamp);
+  for(let i=0;i<fsmTicks;i++) appFSM.update(settleStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,i===0&&flickerResultFresh);
+  if(fsmTicks>0) flickerResultFresh=false; // verbraucht - bis zum naechsten 1-Hz-Block ruht der Flicker-Akkumulator
+  const state=appFSM.current;
 
   document.getElementById('ppfdVal').textContent=settleStatus.isWarmedUp?(isClipping?'———':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD))):'–––';
   if(settleStatus.isWarmedUp&&!isClipping){

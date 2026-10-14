@@ -16,7 +16,8 @@ ${m[1]}
 return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   SIGNAL_CRIT_LIN, SIGNAL_LOW_LIN, classifySignal, analyzeFrame,
   AdaptivePPFDKalmanFilter, LightSourceDetector, SpatialFlickerDetector,
-  ClippingDetector, SettleTimer, AppStatusStateMachine,
+  ClippingDetector, SettleTimer, AppStatusStateMachine, flickerFeed,
+  FrameGate, smoothRate, DurationTimer, IntervalTimer, FsmClock, FpsReliability, WARMUP_MS, FSM_TICK_MS, FSM_MAX_TICKS,
   calculatePARFromLinear, ramp01, TemporalStats, computeQuality,
   Q_CLIP_FULL, Q_CLIP_ZERO, Q_UNI_FULL, Q_UNI_ZERO,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
@@ -468,6 +469,30 @@ t('Versionsnummer ist ueberall dieselbe (Titel, Kopfzeile, Feature-Liste, Servic
   assert.strictEqual(werte.size, 1, 'Versionen laufen auseinander: ' + JSON.stringify(gefunden));
 });
 
+t('Versionsnummer: Lockfile an BEIDEN Stellen, und kein Kommentar nennt eine neuere Version als die App (v3.4.19)', () => {
+  // Der Test darueber prueft nur lock.version. Das Lockfile fuehrt die Version
+  // zweimal (Wurzel und packages[""]); npm schreibt beide, von Hand zieht man
+  // leicht nur eine nach.
+  // Zusaetzlich ein Waechter fuer die haeufigste Art, das Hochzaehlen zu
+  // vergessen: Der Code wird mit "v3.4.N" annotiert, die Version aber nicht
+  // angehoben. Dann bekaeme der Service Worker keinen neuen Cachenamen, und
+  // installierte PWAs lieferten weiter die alte index.html aus.
+  if (process.argv[2]) return;
+  const path = require('path'), root = path.join(__dirname, '..');
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+  assert.strictEqual(lock.packages[''].version, pkg.version,
+    'package-lock.json packages[""].version ist ' + lock.packages[''].version + ', package.json ' + pkg.version);
+  const cmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1; return 0; };
+  const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+  const neuer = new Set();
+  for (const [name, text] of [['index.html', html], ['sw.js', sw]]) {
+    for (const m of text.matchAll(/\bv(\d+\.\d+\.\d+)\b/g)) if (cmp(m[1], pkg.version) > 0) neuer.add(name + ': v' + m[1]);
+  }
+  assert.deepStrictEqual([...neuer], [],
+    'Version hochzaehlen (package.json, package-lock.json x2, index.html x3, sw.js) - Kommentare nennen: ' + [...neuer].join(', '));
+});
+
 t('README nennt denselben Boden, den der Code rechnet', () => {
   // Die alte Angabe "±10 % kalibriert" stammte aus der uCal-KONSTANTE, nicht
   // aus dem Budget - unkalibriert faellt das nicht auf (uCal dominiert dort
@@ -553,13 +578,13 @@ t('REGRESSION: stehengebliebener temporalStats-Puffer kippt Q auf 0', () => {
 
 t('Warmup laeuft nach dem Moduswechsel neu an (Kalman ruht so lange)', () => {
   // Waehrend des Warmups ruft der Aufrufer update() gar nicht auf - genau
-  // deshalb ueberlebte das alte x bisher die vollen 300 Frames.
+  // deshalb ueberlebte das alte x bisher den vollen Warmup.
   const tc = new P.SettleTimer();
-  for (let i = 0; i < 400; i++) tc.update();
-  assert.strictEqual(tc.update().isWarmedUp, true);
+  tc.update(0);
+  assert.strictEqual(tc.update(P.WARMUP_MS + 1000).isWarmedUp, true);
   tc.reset();
-  assert.strictEqual(tc.update().isWarmedUp, false, 'reset muss den Warmup neu starten');
-  assert.strictEqual(tc.warmupFrames, 300);
+  assert.strictEqual(tc.update(P.WARMUP_MS + 2000).isWarmedUp, false, 'reset muss den Warmup neu starten');
+  assert.strictEqual(tc.warmupMs, 5000);
 });
 
 console.log('== Flicker-Hysterese (v3.4.5) ==');
@@ -608,15 +633,105 @@ t('Langer Flicker leuchtet nicht ewig nach (Deckel begrenzt das Loeschen)', () =
   assert.strictEqual(s.id, 'STABLE', 'nach ' + fsm.CAPS.flicker + ' sauberen Sekunden erwartet');
 });
 
-t('Pausierte Erkennung (Pixel-Step 8x) laesst die Warnung abklingen', () => {
-  // Die Pausen-Zweige setzen isFlickering=false und melden das als frisches
-  // Ergebnis - genau der Fall aus dem Feld-Screenshot.
+// --- Halte-Semantik (v3.4.19) -------------------------------------------
+// Bis v3.4.18 meldeten die Pausen-Zweige (CPU-Limit, zu dunkel, 8x-Step)
+// "kein Flicker" als frisches Ergebnis - drei Pausen-Sekunden loeschten eine
+// echte Warnung, obwohl gar nicht gemessen wurde. Gerade "zu dunkel" trifft
+// PWM-gedimmte LEDs, die am ehesten flackern. Jetzt gilt: Pause = keine
+// Information = Zustand halten; beendet wird eine Warnung nur durch echte,
+// saubere Detektionen.
+//
+// sitzungsSekunde() bildet den Aufrufer nach: flickerFeed() entscheidet, ob
+// gemessen wird, und nur dann zaehlt das Ergebnis fuer die FSM.
+const MESSEN = { reliable: true, y: 120, step: 4 };
+const PAUSEN = {
+  'cpu-limit': { reliable: false, y: 120, step: 4 },
+  'dark': { reliable: true, y: 10, step: 4 },
+  'step': { reliable: true, y: 120, step: 8 },
+};
+function sitzungsSekunde(fsm, bedingung, flickerBefund, frames = 60) {
+  const feed = P.flickerFeed(bedingung.reliable, bedingung.y, bedingung.step);
+  const flickering = feed.pause ? false : flickerBefund; // wie processLoop()
+  let s;
+  for (let i = 0; i < frames; i++) s = fsm.update(true, flickering, false, 30, i === 0 && feed.fresh);
+  return s;
+}
+const inFlicker = () => {
   const fsm = warm(new P.AppStatusStateMachine());
   let s;
-  for (let i = 0; i < 5; i++) s = sekunde(fsm, true);
-  assert.strictEqual(s.id, 'FLICKER');
-  for (let i = 0; i < fsm.CAPS.flicker; i++) s = sekunde(fsm, false);
-  assert.strictEqual(s.id, 'STABLE');
+  for (let i = 0; i < 6; i++) s = sitzungsSekunde(fsm, MESSEN, true);
+  assert.strictEqual(s.id, 'FLICKER', 'Ausgangslage: anhaltender Befund muss FLICKER ergeben');
+  return fsm;
+};
+
+t('flickerFeed: unter normalen Bedingungen wird gemessen und das Ergebnis zaehlt', () => {
+  const f = P.flickerFeed(true, 120, 4);
+  assert.strictEqual(f.pause, null);
+  assert.strictEqual(f.fresh, true);
+});
+
+t('flickerFeed: Pausengruende und ihre Rangfolge (CPU > dunkel > Step)', () => {
+  assert.strictEqual(P.flickerFeed(false, 120, 4).pause, 'cpu-limit');
+  assert.strictEqual(P.flickerFeed(true, 10, 4).pause, 'dark');
+  assert.strictEqual(P.flickerFeed(true, 120, 8).pause, 'step');
+  assert.strictEqual(P.flickerFeed(false, 10, 8).pause, 'cpu-limit', 'CPU-Limit hat Vorrang');
+  assert.strictEqual(P.flickerFeed(true, 10, 8).pause, 'dark', 'dunkel hat Vorrang vor Step');
+});
+
+t('flickerFeed: Grenze "zu dunkel" liegt bei 20 (20 misst, darunter pausiert)', () => {
+  assert.strictEqual(P.flickerFeed(true, 20, 4).pause, null);
+  assert.strictEqual(P.flickerFeed(true, 19.99, 4).pause, 'dark');
+});
+
+t('flickerFeed: ein Durchlauf liefert nur dann ein frisches Ergebnis, wenn gemessen wurde', () => {
+  for (const reliable of [true, false]) for (const y of [0, 19.99, 20, 120, 255]) for (const step of [2, 4, 8]) {
+    const f = P.flickerFeed(reliable, y, step);
+    assert.strictEqual(f.fresh, f.pause === null,
+      `reliable=${reliable} y=${y} step=${step}: pause=${f.pause} fresh=${f.fresh}`);
+  }
+});
+
+for (const [grund, bed] of Object.entries(PAUSEN)) {
+  t(`Pause (${grund}): eine laufende Warnung bleibt stehen`, () => {
+    const fsm = inFlicker();
+    const acc = fsm.acc.flicker;
+    let s;
+    for (let i = 0; i < 30; i++) s = sitzungsSekunde(fsm, bed, false);
+    assert.strictEqual(s.id, 'FLICKER', 'Warnung ohne Messung abgebaut');
+    assert.strictEqual(fsm.acc.flicker, acc, 'Akkumulator hat sich in der Pause bewegt');
+  });
+
+  t(`Pause (${grund}): gesammelte Evidenz geht nicht verloren und wird nicht erfunden`, () => {
+    const fsm = warm(new P.AppStatusStateMachine());
+    sitzungsSekunde(fsm, MESSEN, true);
+    sitzungsSekunde(fsm, MESSEN, true); // 2 von FLICKER_ENTER=3
+    for (let i = 0; i < 30; i++) sitzungsSekunde(fsm, bed, false);
+    assert.strictEqual(fsm.acc.flicker, 2, 'Pause hat Evidenz veraendert');
+    assert.strictEqual(fsm.current.id, 'STABLE', 'Pause hat die Warnung ausgeloest');
+    assert.strictEqual(sitzungsSekunde(fsm, MESSEN, true).id, 'FLICKER', 'dritte echte Detektion muss ausloesen');
+  });
+
+  t(`Ende des Flackerns nach Pause (${grund}): erst echte saubere Messungen beenden die Warnung`, () => {
+    const fsm = inFlicker();
+    for (let i = 0; i < 15; i++) sitzungsSekunde(fsm, bed, false); // Pause
+    let s;
+    for (let i = 0; i < fsm.CAPS.flicker - 1; i++) s = sitzungsSekunde(fsm, MESSEN, false);
+    assert.strictEqual(s.id, 'FLICKER', 'zu frueh beendet - eine Detektion zu wenig');
+    s = sitzungsSekunde(fsm, MESSEN, false);
+    assert.strictEqual(s.id, 'STABLE', 'nach ' + fsm.CAPS.flicker + ' sauberen Detektionen erwartet');
+  });
+}
+
+t('Pausen und Messungen gemischt: nur die Messungen zaehlen', () => {
+  const fsm = inFlicker();
+  // abwechselnd Pause und sauber gemessen - Beendigung braucht genau CAPS.flicker saubere Messungen
+  let s, saubere = 0;
+  while (fsm.current.id === 'FLICKER' && saubere < 50) {
+    sitzungsSekunde(fsm, PAUSEN.dark, false);
+    s = sitzungsSekunde(fsm, MESSEN, false);
+    saubere++;
+  }
+  assert.strictEqual(saubere, fsm.CAPS.flicker, 'Pausen haben mitgezaehlt (saubere Messungen: ' + saubere + ')');
 });
 
 t('Ohne frisches Ergebnis ruht der Akkumulator vollstaendig', () => {
@@ -675,21 +790,137 @@ t('Kalman konvergiert auf konstante Messreihe', () => {
   for (let i = 0; i < 60; i++) x = k.update(500);
   approx(x, 500, 25, 'Konvergenz');
 });
-t('Einschwingen: keine Korrektur des Messwerts, fertig nach genau 300 Frames (v3.4.18)', () => {
+t('Einschwingen: keine Korrektur des Messwerts, fertig nach WARMUP_MS - egal in welchem Takt aufgerufen (v3.4.19)', () => {
   // Bis v3.4.17 senkte ein "Temperatur"-Faktor den Rohwert waehrend der
   // ersten 300 Frames um bis zu 2 % - ohne Grundlage, gemessen wurde nie eine
-  // Temperatur. Der Timer liefert jetzt nur noch den Fortschritt.
-  const tc = new P.SettleTimer();
-  const erster = tc.update();
-  assert.strictEqual(erster.factor, undefined, 'Einschwingen darf den Messwert nicht korrigieren');
-  assert.strictEqual(erster.isWarmedUp, false);
-  let s; for (let i = 1; i < 299; i++) s = tc.update();
-  assert.strictEqual(s.isWarmedUp, false, 'nach 299 Frames noch nicht eingeschwungen');
-  assert.strictEqual(tc.settled, false);
-  s = tc.update();
-  assert.ok(s.isWarmedUp && tc.settled, 'nach 300 Frames eingeschwungen');
-  assert.strictEqual(s.progress, 100);
+  // Temperatur. Der Timer liefert nur noch den Fortschritt. Bis v3.4.18 war
+  // das Ende an Schleifendurchlaeufe gebunden (5 s bei 60 Hz, 2,5 s bei 120 Hz).
+  for (const hz of [30, 60, 120]) {
+    const tc = new P.SettleTimer();
+    const dt = 1000 / hz;
+    const erster = tc.update(0);
+    assert.strictEqual(erster.factor, undefined, 'Einschwingen darf den Messwert nicht korrigieren');
+    assert.strictEqual(erster.isWarmedUp, false);
+    let s; for (let ms = dt; ms < P.WARMUP_MS; ms += dt) s = tc.update(ms);
+    assert.strictEqual(s.isWarmedUp, false, hz + ' Hz: vor ' + P.WARMUP_MS + ' ms noch nicht eingeschwungen');
+    assert.strictEqual(tc.settled, false);
+    s = tc.update(P.WARMUP_MS);
+    assert.ok(s.isWarmedUp && tc.settled, hz + ' Hz: nach ' + P.WARMUP_MS + ' ms eingeschwungen');
+    assert.strictEqual(s.progress, 100);
+  }
   assert.ok(!/rawPPFD\s*\*=\s*settleStatus/.test(html), 'Messschleife multipliziert den Rohwert noch mit dem Einschwing-Status');
+});
+
+console.log('== Zeitbasis: Frame-Gate und Fristen (v3.4.19) ==');
+
+t('FrameGate: gleiches Token = kein neuer Frame, neues Token = neuer Frame', () => {
+  const g = new P.FrameGate();
+  assert.strictEqual(g.isNew(10), true, 'erster Frame ist neu');
+  assert.strictEqual(g.isNew(10), false);
+  assert.strictEqual(g.isNew(10), false);
+  assert.strictEqual(g.isNew(11), true);
+  assert.strictEqual(g.isNew(11), false);
+});
+
+t('FrameGate: ein ruecklaeufiges Token (neuer Stream) zaehlt als neu; reset vergisst', () => {
+  const g = new P.FrameGate();
+  g.isNew(500);
+  assert.strictEqual(g.isNew(0.5), true, 'Token ist kleiner geworden - neue Quelle');
+  g.reset();
+  assert.strictEqual(g.isNew(0.5), true, 'nach reset ist derselbe Wert wieder neu');
+});
+
+t('FrameGate: ohne brauchbares Token gilt jeder Aufruf als neu (altes Verhalten)', () => {
+  const g = new P.FrameGate();
+  for (const tok of [null, undefined, NaN, Infinity, 'x', () => 1]) {
+    assert.strictEqual(g.isNew(tok), true, 'Token ' + String(tok));
+    assert.strictEqual(g.isNew(tok), true, 'Token ' + String(tok) + ' (wiederholt)');
+  }
+});
+
+t('smoothRate: konvergiert gegen die wahre Rate, Intervall wird auf 250 ms gedeckelt', () => {
+  let r = 30;
+  for (let i = 0; i < 200; i++) r = P.smoothRate(r, 1000 / 60);
+  approx(r, 60, 0.5, 'Rate nach Einschwingen');
+  assert.strictEqual(P.smoothRate(42, 0), 42, 'Intervall 0 aendert nichts');
+  assert.strictEqual(P.smoothRate(42, -5), 42, 'negatives Intervall aendert nichts');
+  assert.strictEqual(P.smoothRate(42, 250), P.smoothRate(42, 5000), 'lange Pause wird gedeckelt');
+});
+
+t('DurationTimer: feuert erst nach ms am Stueck, jede Unterbrechung setzt zurueck', () => {
+  const d = new P.DurationTimer(1000);
+  assert.strictEqual(d.update(true, 0), false);
+  assert.strictEqual(d.update(true, 999), false);
+  assert.strictEqual(d.update(true, 1000), true);
+  assert.strictEqual(d.update(true, 5000), true, 'bleibt faellig, solange die Bedingung gilt');
+  assert.strictEqual(d.update(false, 5010), false);
+  assert.strictEqual(d.update(true, 5020), false, 'Frist beginnt nach Unterbrechung neu');
+  assert.strictEqual(d.update(true, 6019), false);
+  assert.strictEqual(d.update(true, 6020), true);
+  d.reset();
+  assert.strictEqual(d.update(true, 7000), false, 'reset beginnt neu');
+});
+
+t('IntervalTimer: erster Aufruf scharf-schaltet nur, danach nach jeweils ms faellig', () => {
+  const iv = new P.IntervalTimer(1000);
+  assert.strictEqual(iv.due(100), false, 'startet wie ein Zaehler bei 0');
+  assert.strictEqual(iv.due(1099), false);
+  assert.strictEqual(iv.due(1100), true);
+  assert.strictEqual(iv.due(1101), false, 'direkt danach nicht noch einmal');
+  assert.strictEqual(iv.due(2100), true);
+  iv.reset();
+  assert.strictEqual(iv.due(5000), false);
+});
+
+t('IntervalTimer: wird nicht befragt = bleibt stehen, danach sofort faellig', () => {
+  // Verdrahtung des Drift-Checks: waehrend einer Belichtungs-Stufe wird due()
+  // gar nicht gerufen; direkt danach muss der Check laufen.
+  const iv = new P.IntervalTimer(1000);
+  iv.due(0);
+  assert.strictEqual(iv.due(10000), true);
+});
+
+t('FsmClock: Ticks pro Zeit sind vom Aufruftakt unabhaengig (30/60/120 Hz)', () => {
+  const sek = 10;
+  for (const hz of [24, 30, 60, 90, 120, 144]) {
+    const c = new P.FsmClock();
+    let ticks = 0;
+    const n = Math.round(sek * hz), dt = 1000 / hz;
+    for (let i = 0; i <= n; i++) ticks += c.ticks(i * dt);
+    const erwartet = sek * 1000 / P.FSM_TICK_MS;
+    assert.ok(Math.abs(ticks - erwartet) <= 1, hz + ' Hz: ' + ticks + ' Ticks statt ' + erwartet.toFixed(1));
+  }
+});
+
+t('FsmClock: erster Aufruf scharf-schaltet, Rest geht nicht verloren, lange Pause wird nicht nachgeholt', () => {
+  const c = new P.FsmClock(10);
+  assert.strictEqual(c.ticks(1000), 0);
+  assert.strictEqual(c.ticks(1004), 0, 'unter einem Tick');
+  assert.strictEqual(c.ticks(1011), 1, 'Rest von 4 ms + 7 ms ergibt den ersten Tick');
+  assert.strictEqual(c.ticks(1035), 2);
+  assert.strictEqual(c.ticks(2000), P.FSM_MAX_TICKS, 'lange Pause: gedeckelt');
+  assert.strictEqual(c.ticks(2005), 0, 'nach der Pause laeuft es normal weiter, kein Nachholen');
+  assert.strictEqual(c.ticks(1500), 0, 'Uhr springt zurueck: neu scharf-schalten, keine negativen Ticks');
+  c.reset();
+  assert.strictEqual(c.ticks(9000), 0);
+});
+
+t('FpsReliability: erst nach FPS_CONFIRM-Dauer am Stueck unzuverlaessig, ueber high sofort wieder gut', () => {
+  const f = new P.FpsReliability(15, 20, 170);
+  assert.strictEqual(f.update(10, 0), true);
+  assert.strictEqual(f.update(10, 169), true);
+  assert.strictEqual(f.update(10, 170), false, 'nach 170 ms am Stueck unter 15');
+  assert.strictEqual(f.update(17, 200), false, 'Totband haelt den Zustand');
+  assert.strictEqual(f.update(25, 210), true, 'ueber 20: sofort wieder zuverlaessig');
+});
+
+t('FpsReliability: ein kurzer Einbruch unter 170 ms loest nichts aus', () => {
+  const f = new P.FpsReliability(15, 20, 170);
+  f.update(10, 0); f.update(10, 100);
+  f.update(30, 110); // Erholung unterbricht die Frist
+  f.update(10, 120);
+  assert.strictEqual(f.update(10, 280), true, 'Frist begann bei 120 neu, bei 280 erst 160 ms');
+  assert.strictEqual(f.update(10, 290), false);
 });
 
 console.log('== Uniformität (3x3-CV, v3.3.1) ==');
