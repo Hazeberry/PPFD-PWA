@@ -1933,7 +1933,7 @@ async function applyAntiClippingEV(){
 // 3) Waehrend der Settle-Zeit kommen Frames mit neuer Belichtung an, waehrend
 //    die Formel noch durch die alte teilt. Der Aufrufer haelt deshalb den
 //    Kalman an, solange clipStepInProgress gesetzt ist.
-// 4) v3.4.19: Dasselbe gilt fuer alles, was einen Wert DAUERHAFT festschreibt.
+// 4) v3.4.20: Dasselbe gilt fuer alles, was einen Wert DAUERHAFT festschreibt.
 //    In dieser Phase tragen currentRawPPFDUncalibrated und lastFrameSnapshot
 //    Werte, die um CLIP_STEP_FACTOR zu niedrig sind (neue, kuerzere Belichtung
 //    im Bild, alte, laengere im Nenner). Gefaehrlich ist der Moment, in dem das
