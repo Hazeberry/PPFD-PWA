@@ -149,7 +149,7 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
 });
 
-console.log('== LightSourceDetector: Konfidenz bei Hysterese (v3.4.19) ==');
+console.log('== LightSourceDetector: Konfidenz bei Hysterese (v3.4.20) ==');
 
 const rgbVon = (key) => { const p = P.LIGHT_PROFILES[key]; return [p.r * 1000, p.g * 1000, (1 - p.r - p.g) * 1000]; };
 const abstand = (a, b) => Math.hypot(P.LIGHT_PROFILES[a].r - P.LIGHT_PROFILES[b].r, P.LIGHT_PROFILES[a].g - P.LIGHT_PROFILES[b].g);
