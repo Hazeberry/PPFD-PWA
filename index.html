@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.19 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.20 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -404,7 +404,7 @@ class LightSourceDetector {
       if(this.detectionCounter<this.hysteresisThreshold) bestKey=this.lastDetection.key;
       else this.detectionCounter=0;
     } else {this.detectionCounter=0;}
-    // v3.4.19 FIX: Die Konfidenz gehoert zum GEMELDETEN Profil. Bisher kam sie
+    // v3.4.20 FIX: Die Konfidenz gehoert zum GEMELDETEN Profil. Bisher kam sie
     // aus minDist - dem Abstand des besten KANDIDATEN. Greift die Hysterese,
     // wird aber der alte Schluessel zurueckgegeben, und der Kandidat ist gerade
     // der, der abgelehnt wurde: ein perfekter Leuchtstoff-Treffer (r=0.30,
@@ -1505,7 +1505,7 @@ function closeCalibModal(){document.getElementById('calibModal').classList.remov
 const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert angezeigt wird.';
 function applyCalibration(){
   if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
-  if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.19, s. Punkt 4 bei stepDownExposureManual
+  if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. Punkt 4 bei stepDownExposureManual
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
@@ -1608,7 +1608,7 @@ async function initTrainDevice(){
 function saveTrainPoint(){
   if(!isMeasuring||!lastFrameSnapshot){showError('Erst Messung starten – Datenpunkt braucht einen Live-Frame.');return;}
   if(!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;} // v3.4.18, s. applyCalibration
-  if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.19, s. applyCalibration
+  if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. applyCalibration
   const device=(document.getElementById('trainDevice').value||'').trim();
   if(!device){showError('Gerät/Handy-Modell angeben – wichtig, wenn mehrere Personen Daten beisteuern (unterschiedliche Kamerasensoren!).');return;}
   const ref=parseFloat(document.getElementById('trainRefPPFD').value);
@@ -1947,7 +1947,7 @@ async function applyAntiClippingEV(){
 // Treiber quantisieren (A17-Fall). Hat sich nichts bewegt, gilt der Schritt
 // als gescheitert und der Aufrufer zeigt den bisherigen Hinweis.
 const CLIP_STEP_FACTOR=4;
-// v3.4.19: Waehrend der Umstellung duerfen weder Kalibrierung noch Trainingspunkt
+// v3.4.20: Waehrend der Umstellung duerfen weder Kalibrierung noch Trainingspunkt
 // festgeschrieben werden - s. Punkt 4 oben.
 const CLIP_STEP_WAIT_MSG='Belichtung wird gerade angepasst – einen Moment warten, dann erneut versuchen.';
 // v3.4.15: Kosinus-Korrektor ist die Empfehlung (README), Papier nur

@@ -494,7 +494,7 @@ t('Neustart der Kamera sperrt wieder (Einschwingen beginnt neu)', ()=>{
   assert.strictEqual(api.customCalibFactor,null);
 });
 
-console.log('== Belichtungs-Umstellung: Kalibrieren und Trainingspunkte gesperrt (v3.4.19) ==');
+console.log('== Belichtungs-Umstellung: Kalibrieren und Trainingspunkte gesperrt (v3.4.20) ==');
 
 // Hintergrund: stepDownExposureManual() kuerzt die Belichtung um den Faktor
 // CLIP_STEP_FACTOR (4) und wartet mindestens VERIFY_SETTLE_MS auf den Treiber.
