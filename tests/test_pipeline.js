@@ -149,6 +149,59 @@ t('LOW_PERF -> CLIPPING bei beginnender Übersteuerung', () => {
   assert.strictEqual(s.id, 'CLIPPING', 'Clipping verliert gegen LOW_PERF');
 });
 
+console.log('== LightSourceDetector: Konfidenz bei Hysterese (v3.4.19) ==');
+
+const rgbVon = (key) => { const p = P.LIGHT_PROFILES[key]; return [p.r * 1000, p.g * 1000, (1 - p.r - p.g) * 1000]; };
+const abstand = (a, b) => Math.hypot(P.LIGHT_PROFILES[a].r - P.LIGHT_PROFILES[b].r, P.LIGHT_PROFILES[a].g - P.LIGHT_PROFILES[b].g);
+function eingeschwungen(key) {
+  const d = new P.LightSourceDetector();
+  for (let i = 0; i < 6; i++) d.detect(...rgbVon(key));
+  return d;
+}
+
+t('REGRESSION: perfekter Leuchtstoff-Treffer bei aktivem Sonnenlicht zeigt NICHT 100 %', () => {
+  const d = eingeschwungen('SUNLIGHT');
+  const r = d.detect(...rgbVon('WHITE_FLUO'));          // Frame 1: Hysterese haelt SUNLIGHT
+  assert.strictEqual(r.id, 'SUNLIGHT', 'Hysterese sollte noch halten');
+  const erwartet = 1 - 5 * abstand('WHITE_FLUO', 'SUNLIGHT');   // Abstand zum GEHALTENEN Profil
+  assert.ok(Math.abs(r.conf - erwartet) < 1e-9,
+    'conf=' + r.conf.toFixed(3) + ', erwartet ' + erwartet.toFixed(3) + ' (Abstand zum gehaltenen Profil)');
+  assert.ok(r.conf < 0.9, 'der abgelehnte Kandidat darf die Anzeige nicht auf ~100 % ziehen');
+});
+
+t('Auch im zweiten gehaltenen Frame stimmt die Konfidenz', () => {
+  const d = eingeschwungen('SUNLIGHT');
+  d.detect(...rgbVon('WHITE_FLUO'));
+  const r = d.detect(...rgbVon('WHITE_FLUO'));
+  assert.strictEqual(r.id, 'SUNLIGHT');
+  assert.ok(r.conf < 0.9, 'conf=' + r.conf.toFixed(3));
+});
+
+t('Nach dem Umschalten gehoert die volle Konfidenz zum neuen Profil', () => {
+  const d = eingeschwungen('SUNLIGHT');
+  let r; for (let i = 0; i < 3; i++) r = d.detect(...rgbVon('WHITE_FLUO'));
+  assert.strictEqual(r.id, 'WHITE_FLUO');
+  assert.ok(Math.abs(r.conf - 1) < 1e-9, 'perfekter Treffer auf dem gemeldeten Profil: conf=' + r.conf);
+});
+
+t('Ohne Hysterese-Eingriff bleibt die Konfidenz wie bisher (1 - 5*minDist)', () => {
+  const d = new P.LightSourceDetector();
+  const r = d.detect(...rgbVon('SODIUM_HPS'));
+  assert.strictEqual(r.id, 'SODIUM_HPS');
+  assert.ok(Math.abs(r.conf - 1) < 1e-9);
+});
+
+t('Festgelegtes Profil (lock) behaelt die ehrliche Konfidenz des gehaltenen Profils', () => {
+  // Wird gesperrt, WAEHREND die Hysterese haelt, lieferte lock() bisher die
+  // Konfidenz des abgelehnten Kandidaten dauerhaft weiter.
+  const d = eingeschwungen('SUNLIGHT');
+  d.detect(...rgbVon('WHITE_FLUO'));
+  d.lock();
+  const r = d.detect(...rgbVon('WHITE_FLUO'));
+  assert.strictEqual(r.id, 'SUNLIGHT');
+  assert.ok(r.conf < 0.9, 'fixiert, aber conf=' + r.conf.toFixed(3) + ' stammt vom abgelehnten Kandidaten');
+});
+
 console.log('== Kalibrier-Geltungsbereich (v3.4.10) ==');
 
 const P1 = { raw: 100, ref: 90 }, P2 = { raw: 900, ref: 1010 };

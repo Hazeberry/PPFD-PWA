@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.18</title>
+<title>PPFD Meter Pro v3.4.19</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.18</span>
+  <span class="app-title">PPFD Meter Pro v3.4.19</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.18 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.19 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -210,6 +210,7 @@
     Uniformitäts-Achse gatet erst ab ausreichendem Signal · Session-ID im Trainingsdaten-Export<br>
     Zurücksetzen räumt alle Lichtprofile der Kamera (Aufbau-Wechsel)<br>
     Blurple-Profil nur noch manuell · moderne Weißlicht-Grow-LEDs über „Weiße LED“<br>
+    Konfidenz gehört zum gemeldeten Profil · Kalibrieren/Trainingspunkt während der Belichtungs-Umstellung gesperrt<br>
     Warnung außerhalb des kalibrierten Bereichs (inkl. Null-Zone)<br>
     Dauerhaftes Übersteuern im Manuell-Modus: Belichtung stufenweise kürzer statt nur Hinweis<br>
     Kosinus-Korrektor als Empfehlung, Kalibrier-Hinweis zum Diffusor-Wechsel<br>
@@ -403,9 +404,22 @@ class LightSourceDetector {
       if(this.detectionCounter<this.hysteresisThreshold) bestKey=this.lastDetection.key;
       else this.detectionCounter=0;
     } else {this.detectionCounter=0;}
-    const conf=Math.max(0,1-minDist*5);
-    this.lastDetection={key:bestKey,dist:minDist,conf:conf};
-    return{id:bestKey,name:this.profiles[bestKey].name,factor:this.profiles[bestKey].factor,conf:conf};
+    // v3.4.19 FIX: Die Konfidenz gehoert zum GEMELDETEN Profil. Bisher kam sie
+    // aus minDist - dem Abstand des besten KANDIDATEN. Greift die Hysterese,
+    // wird aber der alte Schluessel zurueckgegeben, und der Kandidat ist gerade
+    // der, der abgelehnt wurde: ein perfekter Leuchtstoff-Treffer (r=0.30,
+    // g=0.38) bei aktivem Sonnenlicht erschien als "Sonnenlicht, 100 %", obwohl
+    // der Abstand zum gemeldeten Profil 0.050 betraegt (ehrlich: 75 %). Der Chip
+    // "AI Conf." behauptete damit das Gegenteil dessen, was er misst.
+    // Dasselbe galt fuer lock(): lastDetection.conf wurde dauerhaft
+    // weitergereicht, war aber die Konfidenz des abgelehnten Kandidaten.
+    // Der Abstand zum Kandidaten bleibt relevant - fuer die Entscheidung
+    // (bestKey/Hysterese oben), nicht fuer die Anzeige.
+    const hp=this.profiles[bestKey];
+    const dist=Math.sqrt((r-hp.r)**2+(g-hp.g)**2);
+    const conf=Math.max(0,1-dist*5);
+    this.lastDetection={key:bestKey,dist:dist,conf:conf};
+    return{id:bestKey,name:hp.name,factor:hp.factor,conf:conf};
   }
   lock(){this.locked=true;}
   unlock(){this.locked=false;this.lastDetection=null;this.detectionCounter=0;}
@@ -1491,6 +1505,7 @@ function closeCalibModal(){document.getElementById('calibModal').classList.remov
 const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert angezeigt wird.';
 function applyCalibration(){
   if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
+  if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.19, s. Punkt 4 bei stepDownExposureManual
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
@@ -1593,6 +1608,7 @@ async function initTrainDevice(){
 function saveTrainPoint(){
   if(!isMeasuring||!lastFrameSnapshot){showError('Erst Messung starten – Datenpunkt braucht einen Live-Frame.');return;}
   if(!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;} // v3.4.18, s. applyCalibration
+  if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.19, s. applyCalibration
   const device=(document.getElementById('trainDevice').value||'').trim();
   if(!device){showError('Gerät/Handy-Modell angeben – wichtig, wenn mehrere Personen Daten beisteuern (unterschiedliche Kamerasensoren!).');return;}
   const ref=parseFloat(document.getElementById('trainRefPPFD').value);
@@ -1917,10 +1933,23 @@ async function applyAntiClippingEV(){
 // 3) Waehrend der Settle-Zeit kommen Frames mit neuer Belichtung an, waehrend
 //    die Formel noch durch die alte teilt. Der Aufrufer haelt deshalb den
 //    Kalman an, solange clipStepInProgress gesetzt ist.
+// 4) v3.4.19: Dasselbe gilt fuer alles, was einen Wert DAUERHAFT festschreibt.
+//    In dieser Phase tragen currentRawPPFDUncalibrated und lastFrameSnapshot
+//    Werte, die um CLIP_STEP_FACTOR zu niedrig sind (neue, kuerzere Belichtung
+//    im Bild, alte, laengere im Nenner). Gefaehrlich ist der Moment, in dem das
+//    Clipping schon abgeklungen ist: clipLevel steht wieder auf 'ok', die
+//    Gates in applyCalibration()/saveTrainPoint() lassen den Frame durch, der
+//    Rohwert ist aber noch falsch - eine Kalibrierung mit Steigung x4 daneben
+//    (oder ein Trainingspunkt mit grob falschem Rohwert) waere die Folge. Beide
+//    Funktionen pruefen deshalb clipStepInProgress, und zwar VOR jeder
+//    Wert-Pruefung.
 // Uebernommen wird der vom Treiber GEMELDETE Wert, nicht der angeforderte -
 // Treiber quantisieren (A17-Fall). Hat sich nichts bewegt, gilt der Schritt
 // als gescheitert und der Aufrufer zeigt den bisherigen Hinweis.
 const CLIP_STEP_FACTOR=4;
+// v3.4.19: Waehrend der Umstellung duerfen weder Kalibrierung noch Trainingspunkt
+// festgeschrieben werden - s. Punkt 4 oben.
+const CLIP_STEP_WAIT_MSG='Belichtung wird gerade angepasst – einen Moment warten, dann erneut versuchen.';
 // v3.4.15: Kosinus-Korrektor ist die Empfehlung (README), Papier nur
 // Notbehelf - "Diffusor verstaerken" passte nur auf Papier.
 const CLIP_HINT_MSG='Sensor dauerhaft übersteuert – Abstand zur Lampe erhöhen oder Diffusor prüfen (empfohlen: Kosinus-Korrektor; Notbehelf: 2–3 Lagen Papier).';

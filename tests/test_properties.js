@@ -38,7 +38,7 @@ return { srgbInverseEOTF, buildLinearLUT, computeQuality, computeUncertainty,
   CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
   CALIB_RANGE_LO, CALIB_RANGE_HI,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
-  U_NOISE_FLOOR, U_NOISE_MAX, Q_GATE_HOLD };`)();
+  U_NOISE_FLOOR, U_NOISE_MAX, Q_GATE_HOLD, LightSourceDetector, LIGHT_PROFILES };`)();
 
 const RUNS = Number(process.env.PROP_RUNS || 500);
 let passed = 0, failed = 0;
@@ -312,6 +312,58 @@ prop('Nicht-endliche Werte veraendern den Median nicht', [gWerte, fc.constantFro
     const vorher = rm.value(), len = rm.buf.length;
     rm.push(muell);
     return rm.value() === vorher && rm.buf.length === len;
+  });
+
+console.log('== LightSourceDetector ==');
+
+// Beobachtungsfolgen: jeweils ein (R,G,B)-Frame. Summe >= 30, sonst meldet der
+// Detektor bewusst 'UNKNOWN' (zu dunkel) - das ist ein eigener, dokumentierter Pfad.
+const gFrame = fc.tuple(
+  fc.double({ min: 5, max: 255, noNaN: true }),
+  fc.double({ min: 5, max: 255, noNaN: true }),
+  fc.double({ min: 5, max: 255, noNaN: true }));
+const gFolge = fc.array(gFrame, { minLength: 1, maxLength: 40 });
+const abstandZu = (key, R, G, B) => {
+  const sum = R + G + B, pr = P.LIGHT_PROFILES[key];
+  return Math.sqrt((R / sum - pr.r) ** 2 + (G / sum - pr.g) ** 2);
+};
+
+prop('Die Konfidenz gehoert immer zum GEMELDETEN Profil, nicht zum abgelehnten Kandidaten',
+  [gFolge], (folge) => {
+    // Regression: Greift die Hysterese, kam der alte Profil-Schluessel zurueck,
+    // conf aber aus minDist des abgelehnten Kandidaten - ein perfekter
+    // Leuchtstoff-Treffer waehrend aktivem Sonnenlicht erschien als
+    // "Sonnenlicht, 100 %". Invariante ueber BELIEBIGE Folgen: conf ist
+    // 1 - 5*Abstand zum Profil, das tatsaechlich gemeldet wird.
+    const det = new P.LightSourceDetector();
+    for (const [R, G, B] of folge) {
+      const r = det.detect(R, G, B);
+      if (r.id === 'UNKNOWN') continue;
+      const erwartet = Math.max(0, 1 - 5 * abstandZu(r.id, R, G, B));
+      if (!nahe(r.conf, erwartet, 1e-9)) return false;
+    }
+    return true;
+  });
+
+prop('Konfidenz liegt immer in [0,1]', [gFolge], (folge) => {
+  const det = new P.LightSourceDetector();
+  return folge.every(([R, G, B]) => { const c = det.detect(R, G, B).conf; return c >= 0 && c <= 1; });
+});
+
+prop('Ein gehaltenes Profil meldet nie mehr Konfidenz, als sein eigener Abstand erlaubt',
+  [gFolge], (folge) => {
+    const det = new P.LightSourceDetector();
+    for (const [R, G, B] of folge) {
+      const r = det.detect(R, G, B);
+      if (r.id === 'UNKNOWN') continue;
+      const naechster = Math.min(...Object.keys(det.profiles).map(k => abstandZu(k, R, G, B)));
+      const eigener = abstandZu(r.id, R, G, B);
+      // Der gemeldete Abstand darf nie kleiner sein als der des besten Kandidaten,
+      // und die Konfidenz nie besser als beim eigenen Abstand.
+      if (eigener < naechster - 1e-12) return false;
+      if (r.conf > Math.max(0, 1 - 5 * eigener) + 1e-9) return false;
+    }
+    return true;
   });
 
 console.log(`\n${passed} passed, ${failed} failed  (je ${RUNS} Faelle)`);

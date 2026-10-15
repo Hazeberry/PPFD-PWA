@@ -39,7 +39,9 @@ const api=new Function('localStorage','document','window','navigator','console',
     get isMeasuring(){return isMeasuring;},set isMeasuring(v){isMeasuring=v;},
     set currentRawPPFDUncalibrated(v){currentRawPPFDUncalibrated=v;},
     set lastFrameSnapshot(v){lastFrameSnapshot=v;},
-    get toastLast(){return toastLast;},set toastLast(v){toastLast=v;}};`
+    get toastLast(){return toastLast;},set toastLast(v){toastLast=v;},
+    get clipStepInProgress(){return clipStepInProgress;},set clipStepInProgress(v){clipStepInProgress=v;},
+    CLIP_STEP_WAIT_MSG};`
 )(localStorage,document,window,navigator,console,()=>0,{now:()=>Date.now()},()=>{},()=>true);
 
 let pass=0,fail=0;
@@ -490,6 +492,87 @@ t('Neustart der Kamera sperrt wieder (Einschwingen beginnt neu)', ()=>{
   messlage(); einschwingen(); api.settleTimer.reset();
   api.applyCalibration();
   assert.strictEqual(api.customCalibFactor,null);
+});
+
+console.log('== Belichtungs-Umstellung: Kalibrieren und Trainingspunkte gesperrt (v3.4.19) ==');
+
+// Hintergrund: stepDownExposureManual() kuerzt die Belichtung um den Faktor
+// CLIP_STEP_FACTOR (4) und wartet mindestens VERIFY_SETTLE_MS auf den Treiber.
+// Erst DANACH wird hardwareSettings.exposureTime nachgezogen. In der Zwischenzeit
+// kommen Frames mit neuer Belichtung an, waehrend die Formel noch durch die ALTE
+// teilt - currentRawPPFDUncalibrated und lastFrameSnapshot sind dann um den
+// Stufenfaktor falsch (zu niedrig). Der Kalman wird dort schon angehalten; die
+// beiden Funktionen, die diese Werte DAUERHAFT festschreiben, bisher nicht.
+// Gefaehrlich ist gerade der Moment, in dem das Clipping schon abgeklungen ist:
+// clipLevel steht dann wieder auf 'ok', die vorhandenen Pruefungen lassen den
+// Frame durch, der Rohwert ist aber noch falsch.
+
+t('REGRESSION: Kalibrieren waehrend der Belichtungs-Umstellung wird abgelehnt', ()=>{
+  messlage(); einschwingen();
+  api.clipStepInProgress=true;        // Clipping abgeklungen (clipLevel 'ok' aus messlage), Umstellung laeuft noch
+  api.applyCalibration();
+  assert.strictEqual(api.customCalibFactor,null,'Kalibrierung mit um Faktor 4 falschem Rohwert uebernommen');
+  assert.strictEqual(store[api.calibStorageKey()],undefined,'Kalibrierung trotzdem gespeichert');
+  assert.ok(api.CLIP_STEP_WAIT_MSG,'CLIP_STEP_WAIT_MSG existiert nicht');
+  assert.strictEqual(api.toastLast,api.CLIP_STEP_WAIT_MSG,'keine verstaendliche Meldung');
+  api.clipStepInProgress=false;
+});
+
+t('REGRESSION: Trainingspunkt waehrend der Belichtungs-Umstellung wird abgelehnt', ()=>{
+  messlage(); einschwingen();
+  api.clipStepInProgress=true;
+  api.saveTrainPoint();
+  assert.strictEqual(store[api.TRAINDATA_KEY],undefined,'Trainingspunkt mit falschem Rohwert gespeichert');
+  assert.strictEqual(api.toastLast,api.CLIP_STEP_WAIT_MSG);
+  api.clipStepInProgress=false;
+});
+
+t('Nach Ende der Umstellung wird kalibriert wie gewohnt', ()=>{
+  messlage(); einschwingen();
+  api.clipStepInProgress=true; api.applyCalibration(); api.toastLast=null;
+  api.clipStepInProgress=false;
+  api.applyCalibration();
+  assert.ok(api.customCalibFactor!==null,'Sperre blieb nach Ende der Umstellung bestehen');
+  assert.ok(Math.abs(api.customCalibFactor-2)<1e-12,'Steigung '+api.customCalibFactor);
+});
+
+t('Nach Ende der Umstellung wird der Trainingspunkt gespeichert', ()=>{
+  messlage(); einschwingen();
+  api.clipStepInProgress=true; api.saveTrainPoint();
+  api.clipStepInProgress=false;
+  api.saveTrainPoint();
+  assert.strictEqual(JSON.parse(store[api.TRAINDATA_KEY]||'[]').length,1);
+});
+
+t('Die Meldung sagt, WORAUF gewartet wird', ()=>{
+  const msg=api.CLIP_STEP_WAIT_MSG||'';
+  assert.ok(/Belichtung/i.test(msg),'Meldung nennt die Belichtung nicht: '+msg);
+  assert.ok(msg!==api.SETTLE_WAIT_MSG,'darf nicht mit der Einschwing-Meldung verwechselbar sein');
+});
+
+t('Laeuft beides (Einschwingen UND Umstellung), gilt die Einschwing-Meldung zuerst', ()=>{
+  // Festgehalten, damit die Reihenfolge eine bewusste Entscheidung bleibt:
+  // das Einschwingen ist die laengere Wartezeit.
+  messlage();                          // NICHT eingeschwungen
+  api.clipStepInProgress=true;
+  api.applyCalibration();
+  assert.strictEqual(api.toastLast,api.SETTLE_WAIT_MSG);
+  api.clipStepInProgress=false;
+});
+
+t('Die Sperre liegt vor jeder Pruefung des Rohwerts', ()=>{
+  // Der gefaehrliche Frame ist genau einer, der alle Wert-Pruefungen besteht.
+  // Sperre MUSS also frueher greifen als die Rohwert-/Clipping-/Signal-Gates.
+  const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
+  for(const fn of ['applyCalibration','saveTrainPoint']){
+    const start=skript.indexOf('function '+fn+'(');
+    const kopf=skript.slice(start,start+900);
+    const iSperre=kopf.indexOf('clipStepInProgress');
+    const iWert=Math.min(...['currentRawPPFDUncalibrated','clipLevel','signalLevel','currentSignalLevel']
+      .map(w=>kopf.indexOf(w)).filter(i=>i>=0));
+    assert.ok(iSperre>=0,fn+'() kennt clipStepInProgress nicht');
+    assert.ok(iSperre<iWert,fn+'(): Sperre steht NACH der ersten Wert-Pruefung');
+  }
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');
