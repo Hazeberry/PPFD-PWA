@@ -179,11 +179,11 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **112 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_calib_storage.js` | Integrations-Harness, **42 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **117 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_calib_storage.js` | Integrations-Harness, **49 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
 | `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **8 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln) |
-| `tests/test_properties.js` | **31 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
+| `tests/test_properties.js` | **34 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
 | `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
 | `tools/auswertung.js` | Auswertung des CSV-Exports: Unsicherheits-Check und Modellvergleich mit GroupKFold (siehe „Trainingsdaten auswerten“) |
 | `tests/test_auswertung.js` | **16 Tests** für die Auswertung — gegen echte Exporte der App, inkl. Fehlalarmrate und Trennschärfe über simulierte Datensätze |
@@ -193,14 +193,14 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 112/112 erwartet (kein Browser nötig)
-node tests/test_calib_storage.js    # 42/42 erwartet
+node tests/test_pipeline.js         # 117/117 erwartet (kein Browser nötig)
+node tests/test_calib_storage.js    # 49/49 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      #  8/8  erwartet
 node tests/test_auswertung.js       # 16/16 erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
-node tests/test_properties.js       # 31/31 erwartet
+node tests/test_properties.js       # 34/34 erwartet
 node tests/test_model.js            #  3/3  erwartet
 ```
 
