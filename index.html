@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.20</title>
+<title>PPFD Meter Pro v3.4.21</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.20</span>
+  <span class="app-title">PPFD Meter Pro v3.4.21</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.20 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.21 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -217,6 +217,7 @@
     Neustart-Hinweis bei dauerhaft schwachem Signal nach einer Belichtungs-Stufe<br>
     Unsicherheit ohne 95-%-Behauptung · 660-nm-Hinweis und Linearisierung präzisiert<br>
     Einschwingen statt „Aufwärmen“ (keine Temperatur-Korrektur) · Kalibrieren erst nach dem Einschwingen<br>
+    Gehaltener Wert abgedunkelt mit Abzeichen · „Belichtung nicht gemeldet“ im Software-Fallback · Service Worker räumt nur eigene Caches<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -786,6 +787,38 @@ function calibRangeStatus(raw,p1,p2,calib){
   if(raw>hi*CALIB_RANGE_HI) return{state:'above',lo:lo,hi:hi,zeroAt:zeroAt};
   return{state:'ok',lo:lo,hi:hi,zeroAt:zeroAt};
 }
+// v3.4.21: Live-Belichtung/ISO aus den Kameraeinstellungen lesen - und
+// festhalten, OB das Geraet sie ueberhaupt gemeldet hat. Im Software-Fallback
+// hing die Formel bisher still an den Startwerten (1/250 s, ISO 100), wenn ein
+// Geraet nichts meldet: Die Auto-Belichtung normalisiert die Bildhelligkeit,
+// mit einer geratenen Belichtungszeit wird der Wert dann weitgehend
+// lichtunabhaengig (vgl. v3.3.13) - und nichts in der Anzeige verriet es.
+// unit = Sekunden je Einheit der gemeldeten exposureTime (EXP_UNIT).
+// Unplausible Werte (<=1 us, >=2 s) zaehlen als nicht gemeldet.
+function readLiveExposure(set,prev,unit){
+  const s=set||{};
+  const sec=(Number.isFinite(s.exposureTime)&&s.exposureTime>0)?s.exposureTime*unit:null;
+  const expOk=sec!==null&&sec>1e-6&&sec<2;
+  const isoOk=Number.isFinite(s.iso)&&s.iso>0;
+  return{
+    exposureTime:expOk?sec:prev.exposureTime,
+    iso:isoOk?s.iso:prev.iso,
+    exposureReported:expOk,
+    isoReported:isoOk
+  };
+}
+// v3.4.21: Warum wird der angezeigte Wert gerade NICHT aktualisiert? Bei
+// Uebersteuerung zeigt die App "---". Wird der Kalman dagegen vom Q-Gate oder
+// waehrend einer Belichtungs-Umstellung gehalten, sah die grosse Zahl bisher
+// aus wie ein Live-Wert - nur die kleine Unsicherheitszeile nannte es. Genau
+// diese Sorte Fehler (eingefrorene Zahl, obwohl sich das Licht aendert) war
+// 2026 ein Feldfall. Gibt null zurueck, wenn der Wert live ist.
+function heldReason(o){
+  if(!o.warmedUp||o.isClipping) return null; // Einschwingen: '---', Uebersteuerung: '---'
+  if(o.stepInProgress) return{kind:'step'};
+  if(!o.qGateOpen) return{kind:'gate',weakest:o.gateWeakest};
+  return null;
+}
 /* ===PURE-PIPELINE-END=== */
 
 class SoftwareGainController {
@@ -873,6 +906,7 @@ function newSessionId(){
 }
 let exposureDriftStrikes=0,lastExposureCheckFrame=0,exposureLockBaseline=null;
 let lastSwPollFrame=0;
+const SW_POLL_INTERVAL=10;
 const EXPOSURE_CHECK_INTERVAL=60,EXPOSURE_DRIFT_THRESHOLD=0.15,EXPOSURE_DRIFT_STRIKES_LIMIT=3;
 let clipCriticalFrames=0,clipEvApplied=false,clipHintShown=false;
 // v3.4.14: true, solange stepDownExposureManual() die Belichtung umstellt.
@@ -1375,7 +1409,7 @@ async function tuneExposure(track,cap,startReq){
 async function applyHardwareConstraints(stream){
   const track=stream.getVideoTracks()[0];
   const cap=track.getCapabilities(),set=track.getSettings();
-  const result={iso:set.iso||100,exposureTime:set.exposureTime?set.exposureTime*EXP_UNIT:1/250,frameRate:set.frameRate||30,whiteBalanceMode:set.whiteBalanceMode||'continuous',wbManual:false,constraintsApplied:false,deviceLabel:track.label||'Unbekannt'};
+  const result={iso:set.iso||100,exposureTime:set.exposureTime?set.exposureTime*EXP_UNIT:1/250,frameRate:set.frameRate||30,whiteBalanceMode:set.whiteBalanceMode||'continuous',wbManual:false,constraintsApplied:false,deviceLabel:track.label||'Unbekannt',exposureReported:false,isoReported:false};
   const constraints={};
   if(cap.exposureMode?.includes('manual')){
     constraints.exposureMode='manual';
@@ -2144,16 +2178,16 @@ function processLoop(timestamp){
     }
   }
 
-  if(hardwareSettings&&!hardwareSettings.constraintsApplied&&activeStream&&(frameCount-lastSwPollFrame)>=EXPOSURE_CHECK_INTERVAL){
+  if(hardwareSettings&&!hardwareSettings.constraintsApplied&&activeStream&&(frameCount-lastSwPollFrame)>=SW_POLL_INTERVAL){
     lastSwPollFrame=frameCount;
     const swTrack=activeStream.getVideoTracks()[0];
     if(swTrack){
-      const swSet=swTrack.getSettings();
-      if(swSet.exposureTime){
-        const liveExpSec=swSet.exposureTime*EXP_UNIT;
-        if(liveExpSec>1e-6&&liveExpSec<2) hardwareSettings.exposureTime=liveExpSec;
-      }
-      if(swSet.iso) hardwareSettings.iso=swSet.iso;
+      // v3.4.21: readLiveExposure merkt sich, ob das Geraet etwas gemeldet hat
+      // (Anzeige: "Belichtung nicht gemeldet"). getSettings() ist billig - der
+      // Takt ist von 60 auf SW_POLL_INTERVAL Frames gesenkt: bei einem
+      // Lichtwechsel rechnete die Formel bis zu 1 s mit veralteter Belichtung.
+      let swSet=null;try{swSet=swTrack.getSettings();}catch(e){}
+      Object.assign(hardwareSettings,readLiveExposure(swSet,hardwareSettings,EXP_UNIT));
     }
   }
 
@@ -2355,6 +2389,9 @@ function processLoop(timestamp){
   // Der Median wird auch bei gehaltenem Kalman weiter gefuettert, damit das
   // Fenster beim Zurueckkommen nicht mit veralteten Werten startet.
   const medianPPFD=ppfdMedian.push(rawPPFD);
+  // v3.4.21: Software-Fallback ohne gemeldete Belichtung -> Formel rechnet mit
+  // einem geratenen Wert (s. readLiveExposure).
+  const exposureGuessed=!!hardwareSettings&&!hardwareSettings.constraintsApplied&&!hardwareSettings.exposureReported;
   const qGateOpen=!lastQuality||lastQuality.qGate>=Q_GATE_HOLD;
   // v3.4.14: Waehrend stepDownExposureManual() umstellt, kommen Frames mit
   // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese
@@ -2387,7 +2424,8 @@ function processLoop(timestamp){
     // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
     document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)'
       +(customCalibFactor===null?' · unkalibriert':'')
-      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest]);
+      +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
+      +(exposureGuessed?' · Belichtung nicht gemeldet':'');
     setCalibRangeLine(calibRangeSuffix(lastRange));
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
@@ -2419,6 +2457,15 @@ function processLoop(timestamp){
     badgeEl.style.borderColor=state.color;
     cardEl.style.setProperty('--glow-color',state.glow+'33');
     dotEl.className=`status-dot active ${state.id.toLowerCase()}`;
+  }
+  // v3.4.21: gehaltener Wert sichtbar machen (s. heldReason) - abgedunkelte
+  // Zahl und Abzeichen statt Zonenname. Die Farbe bleibt die des Zustands.
+  const held=heldReason({warmedUp:settleStatus.isWarmedUp,isClipping:isClipping,stepInProgress:clipStepInProgress,
+    qGateOpen:qGateOpen,gateWeakest:lastQuality?.gateWeakest});
+  ppfdEl.style.opacity=held?'0.4':'';
+  if(held){
+    badgeEl.textContent=held.kind==='step'?'Belichtung stellt um':'Gehalten: '+(Q_WEAKEST_LABELS[held.weakest]||'Messgüte');
+    badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
   }
 
   animationFrameId=requestAnimationFrame(processLoop);

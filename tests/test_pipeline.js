@@ -22,7 +22,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -530,6 +530,96 @@ t('README nennt denselben Boden, den der Code rechnet', () => {
   assert.ok(new RegExp('±' + boden + '\\s*%').test(readme),
     'README nennt den berechneten Boden ±' + boden + ' % nicht');
   assert.ok(!/±10\s*%\s*kalibriert/.test(readme), 'alte, zu optimistische Angabe wieder da');
+});
+
+console.log('== Software-Fallback: Belichtung gemeldet? (v3.4.21) ==');
+
+const EXPU = 1e-4; // EXP_UNIT: gemeldete exposureTime in 100-us-Einheiten
+const vorher = { exposureTime: 1 / 250, iso: 100 };
+
+t('Gemeldete Werte werden uebernommen und als gemeldet markiert', () => {
+  const r = P.readLiveExposure({ exposureTime: 160, iso: 400 }, vorher, EXPU);
+  assert.ok(Math.abs(r.exposureTime - 0.016) < 1e-12);
+  assert.strictEqual(r.iso, 400);
+  assert.strictEqual(r.exposureReported, true);
+  assert.strictEqual(r.isoReported, true);
+});
+
+t('REGRESSION: meldet das Geraet nichts, bleibt der alte Wert - aber NICHT als gemeldet', () => {
+  for (const set of [{}, null, undefined, { exposureTime: undefined, iso: undefined }]) {
+    const r = P.readLiveExposure(set, vorher, EXPU);
+    assert.strictEqual(r.exposureReported, false, 'Flag bei ' + JSON.stringify(set));
+    assert.strictEqual(r.isoReported, false);
+    assert.strictEqual(r.exposureTime, vorher.exposureTime);
+    assert.strictEqual(r.iso, vorher.iso);
+  }
+});
+
+t('Unplausible Belichtung zaehlt als nicht gemeldet (0, negativ, NaN, Unendlich, >= 2 s, <= 1 us)', () => {
+  for (const v of [0, -5, NaN, Infinity, 20001, 0.001]) {
+    const r = P.readLiveExposure({ exposureTime: v, iso: 100 }, vorher, EXPU);
+    assert.strictEqual(r.exposureReported, false, 'exposureTime=' + v);
+    assert.strictEqual(r.exposureTime, vorher.exposureTime, 'unplausibler Wert uebernommen: ' + v);
+  }
+});
+
+t('Belichtung und ISO werden unabhaengig bewertet', () => {
+  const nurIso = P.readLiveExposure({ iso: 800 }, vorher, EXPU);
+  assert.strictEqual(nurIso.exposureReported, false); assert.strictEqual(nurIso.isoReported, true); assert.strictEqual(nurIso.iso, 800);
+  const nurExp = P.readLiveExposure({ exposureTime: 40 }, vorher, EXPU);
+  assert.strictEqual(nurExp.exposureReported, true); assert.strictEqual(nurExp.isoReported, false); assert.strictEqual(nurExp.iso, 100);
+});
+
+t('Schwankt die Meldung, folgt das Flag der letzten Abfrage', () => {
+  let st = { ...vorher };
+  const a = P.readLiveExposure({ exposureTime: 100, iso: 200 }, st, EXPU); st = { ...st, ...a };
+  assert.strictEqual(a.exposureReported, true);
+  const b = P.readLiveExposure({}, st, EXPU); st = { ...st, ...b };
+  assert.strictEqual(b.exposureReported, false, 'Flag blieb nach ausbleibender Meldung auf true');
+  assert.ok(Math.abs(st.exposureTime - 0.01) < 1e-12, 'letzter bekannter Wert geht verloren');
+});
+
+console.log('== Gehaltener Wert sichtbar (v3.4.21) ==');
+
+const live = { warmedUp: true, isClipping: false, stepInProgress: false, qGateOpen: true, gateWeakest: 'clip' };
+
+t('Live-Wert: kein Halte-Grund', () => assert.strictEqual(P.heldReason(live), null));
+
+t('Q-Gate zu: Halte-Grund nennt die Gate-Achse', () => {
+  const h = P.heldReason({ ...live, qGateOpen: false, gateWeakest: 'uniformity' });
+  assert.deepStrictEqual(h, { kind: 'gate', weakest: 'uniformity' });
+});
+
+t('Belichtungs-Umstellung: eigener Halte-Grund', () => {
+  assert.deepStrictEqual(P.heldReason({ ...live, stepInProgress: true }), { kind: 'step' });
+});
+
+t('Uebersteuerung und Einschwingen zeigen "---" - dort KEIN zweites Abzeichen', () => {
+  assert.strictEqual(P.heldReason({ ...live, isClipping: true, qGateOpen: false }), null);
+  assert.strictEqual(P.heldReason({ ...live, warmedUp: false, qGateOpen: false, stepInProgress: true }), null);
+});
+
+t('Umstellung geht vor Gate (kuerzere, genauere Ursache)', () => {
+  assert.strictEqual(P.heldReason({ ...live, stepInProgress: true, qGateOpen: false }).kind, 'step');
+});
+
+t('Verdrahtung: Abzeichen wird gesetzt, Zahl abgedunkelt und danach wieder normal', () => {
+  assert.ok(/const held=heldReason\(/.test(html), 'processLoop ruft heldReason nicht auf');
+  assert.ok(/ppfdEl\.style\.opacity=held\?'0\.4':''/.test(html), 'Zahl wird nicht abgedunkelt bzw. nicht zurueckgesetzt');
+  assert.ok(/'Gehalten: '\+\(Q_WEAKEST_LABELS\[held\.weakest\]/.test(html), 'Abzeichen nennt den Grund nicht');
+  // Muss NACH dem Zustands-Zweig stehen, sonst ueberschreibt der es wieder.
+  assert.ok(html.indexOf('const held=heldReason(') > html.indexOf("dotEl.className=`status-dot active ${state.id.toLowerCase()}`;"),
+    'Halte-Anzeige steht vor dem Zustands-Zweig und wird ueberschrieben');
+});
+
+t('Verdrahtung: Software-Poll nutzt readLiveExposure und den schnelleren Takt', () => {
+  assert.ok(/Object\.assign\(hardwareSettings,readLiveExposure\(swSet,hardwareSettings,EXP_UNIT\)\)/.test(html),
+    'Poll schreibt nicht ueber readLiveExposure');
+  assert.ok(/\(frameCount-lastSwPollFrame\)>=SW_POLL_INTERVAL/.test(html), 'Poll laeuft nicht mit SW_POLL_INTERVAL');
+  const n = Number(html.match(/const SW_POLL_INTERVAL=(\d+)/)[1]);
+  assert.ok(n >= 5 && n <= 30, 'SW_POLL_INTERVAL=' + n + ' (bei 60 fps ~' + (n / 60 * 1000).toFixed(0) + ' ms)');
+  assert.ok(/exposureReported:false,isoReported:false/.test(html), 'Startzustand ist nicht "nicht gemeldet"');
+  assert.ok(/\+\(exposureGuessed\?' · Belichtung nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
 });
 
 console.log('== Kalman-Reset beim Moduswechsel (v3.4.6) ==');

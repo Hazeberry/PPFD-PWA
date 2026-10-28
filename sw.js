@@ -2,17 +2,23 @@
 // Cache-first für die eigene Origin: App läuft nach erstem Laden komplett
 // offline (Kamera/APIs brauchen ohnehin kein Netz). Versions-Cachename
 // erzwingt Update bei neuem Release (activate räumt alte Caches weg).
-const CACHE='ppfd-v3.4.20';
+const CACHE='ppfd-v3.4.21';
 const ASSETS=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png','./icon-512-maskable.png','./apple-touch-icon.png'];
 
 self.addEventListener('install',e=>{
   e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()));
 });
 
+// v3.4.21: Nur EIGENE Caches loeschen. Cache Storage gehoert zur ganzen
+// Herkunft, nicht zu einem Projekt: Auf GitHub Pages teilen sich alle Repos
+// eines Kontos hazeberry.github.io (PPFD-PWA, Go-PWA, ...). Bisher raeumte
+// jedes Update dieser App ALLE Caches ab, die nicht ppfd-vX.Y.Z hiessen - und
+// damit auch den Offline-Cache jeder anderen App auf derselben Herkunft.
+const CACHE_PREFIX='ppfd-';
 self.addEventListener('activate',e=>{
   e.waitUntil(
     caches.keys()
-      .then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k))))
+      .then(ks=>Promise.all(ks.filter(k=>k.startsWith(CACHE_PREFIX)&&k!==CACHE).map(k=>caches.delete(k))))
       .then(()=>self.clients.claim())
   );
 });

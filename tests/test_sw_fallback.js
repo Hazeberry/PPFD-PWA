@@ -21,6 +21,7 @@ FakeResponse.error=()=>new FakeResponse(null,{ok:false,isError:true});
 
 function makeScope(opts={}){
   const store=new Map();
+  const deleted=[];
   const cacheApi={
     open:async()=>({
       addAll:async(list)=>{list.forEach(u=>store.set(u,new FakeResponse('inhalt:'+u)));},
@@ -31,8 +32,10 @@ function makeScope(opts={}){
       if(opts.emptyCache) return undefined;
       return store.get(key);
     },
-    keys:async()=>[...new Set([...store.keys()])],
-    delete:async()=>true
+    // Wie die echte Cache-API: keys() liefert die NAMEN der Caches, nicht
+    // Request-URLs. cacheNames = was auf der Herkunft ausserdem liegt.
+    keys:async()=>[...(opts.cacheNames||[])],
+    delete:async(name)=>{deleted.push(name);return true;}
   };
   const handlers={};
   const scope={
@@ -40,7 +43,7 @@ function makeScope(opts={}){
     skipWaiting(){},clients:{claim(){}},
     caches:cacheApi,location:{origin:'https://example.test'},
     fetch:opts.fetch||(async()=>{throw new Error('offline');}),
-    Response:FakeResponse,URL,store,handlers
+    Response:FakeResponse,URL,store,handlers,deleted
   };
   new Function('self','caches','location','fetch','Response','URL',src)
     (scope,cacheApi,scope.location,scope.fetch,FakeResponse,URL);
@@ -112,6 +115,36 @@ await t('Fremd-Origin wird ausgeliefert, aber nicht gecached', async()=>{
   const r=await doFetch(s,req(url));
   assert.strictEqual(r.body,'extern');
   assert.ok(!s.store.has(url),'fremde Origin darf nicht in den App-Cache');
+});
+
+console.log('== Cache-Aufraeumen nur fuer eigene Caches (v3.4.21) ==');
+
+// Name des aktuellen Caches aus sw.js - der Test soll nicht bei jedem
+// Versionssprung angepasst werden muessen.
+const CURRENT=src.match(/const CACHE='([^']+)'/)[1];
+const activate=async(s)=>{await s.handlers.activate({waitUntil:p=>p}); await new Promise(r=>setTimeout(r,0));};
+
+await t('REGRESSION: fremde Caches derselben Herkunft bleiben stehen', async()=>{
+  // Auf GitHub Pages teilen sich alle Repos eines Kontos die Herkunft.
+  const s=makeScope({cacheNames:['go-pwa-v7','workbox-precache-v2','irgendwas',CURRENT]});
+  await activate(s);
+  assert.deepStrictEqual(s.deleted,[],'geloescht: '+JSON.stringify(s.deleted));
+});
+
+await t('Alte eigene Caches werden weiterhin geraeumt, der aktuelle bleibt', async()=>{
+  const s=makeScope({cacheNames:['ppfd-v3.3.0','ppfd-v3.4.0',CURRENT,'go-pwa-v7']});
+  await activate(s);
+  assert.deepStrictEqual(s.deleted.sort(),['ppfd-v3.3.0','ppfd-v3.4.0']);
+});
+
+await t('Praefix ist exakt: "ppfdx-..." und "mein-ppfd-..." sind nicht eigen', async()=>{
+  const s=makeScope({cacheNames:['ppfdx-v1','mein-ppfd-v1','PPFD-v1','ppfd-alt']});
+  await activate(s);
+  assert.deepStrictEqual(s.deleted,['ppfd-alt']);
+});
+
+await t('Der Cache-Name beginnt mit dem Praefix (sonst raeumte sich die App nie auf)', async()=>{
+  assert.ok(CURRENT.startsWith('ppfd-'),'CACHE='+CURRENT+' passt nicht zu CACHE_PREFIX');
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');
