@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.24</title>
+<title>PPFD Meter Pro v3.4.25</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.24</span>
+  <span class="app-title">PPFD Meter Pro v3.4.25</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.24 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.25 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -221,6 +221,7 @@
     Kanalweiser Schwarzwert · Stetiger ISO-Faktor · Unsicherheit durch affine Kalibrierung fortgepflanzt<br>
     Schwarzwert beim Start geladen · Manuell-Nachweis nur durch beobachtete Reaktion · Kalibrieren gesperrt bei Profilwechsel und geschlossenem Q-Gate<br>
     Manuell-Nachweis nur über gemeldete Belichtungszeit · Unsicherheit nahe Kalibrier-Nullpunkt „nicht quantifizierbar“ · Altkalibrierung (altes ISO-Modell) gekennzeichnet<br>
+    Verify-Nachweis nur über gemeldete Belichtungszeit · Null-Zone auch bei Rohwert 0 erkannt<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -740,10 +741,17 @@ function computeUncertainty(o){
 // (oder Ergebnis <=0) ist die relative Unsicherheit NICHT zuverlaessig
 // quantifizierbar (unquantifiable=true, uRel/uSys/uRand=null).
 const AFFINE_GAIN_LIMIT=5;
+// v3.4.25 FIX: Bei gueltiger Kalibrierung zuerst das ERGEBNIS pruefen. Vorher
+// lieferte !(raw>0) vorab Faktor 1 - bei Rohwert exakt 0 (schwarzer Frame) mit
+// Offset -100 zeigte die App 0,0 und "±52 %" statt "nicht quantifizierbar".
+// Ein negativer Rohwert kommt aus der Pipeline nicht vor; er wird wie 0
+// behandelt. Nicht-endlicher Rohwert: keine Aussage moeglich -> 1 (die
+// Anzeige ist dann ohnehin kein Messwert).
 function affineUncertaintyGain(raw,slope,offset){
-  if(!(slope>0)||!Number.isFinite(offset)||offset===0||!(raw>0)) return 1;
-  const lin=slope*raw,res=lin+offset;
+  if(!(slope>0)||!Number.isFinite(offset)||offset===0||!Number.isFinite(raw)) return 1;
+  const lin=slope*Math.max(0,raw),res=lin+offset;
   if(!(res>0)) return Infinity;
+  if(!(lin>0)) return 1;
   return Math.max(1,lin/res);
 }
 function propagateAffineUncertainty(u,raw,slope,offset){
@@ -893,6 +901,20 @@ function rampReactionObserved(step,liveNow){
   const lb=step.liveBefore;
   return Number.isFinite(lb)&&Number.isFinite(liveNow)&&
     Math.abs(liveNow-lb)>Math.max(2,0.2*lb)&&((liveNow>lb)===(step.dir>0));
+}
+// v3.4.25 FIX: Beleg des Verify-Schritts in tuneExposure. Bisher genuegte
+// yMoved||settingsMoved - eine reine Helligkeitsaenderung (Lichtwechsel 150->100
+// waehrend die Kamera alle Befehle ignoriert, 'continuous' meldet und die
+// Belichtungszeit unveraendert laesst) bestaetigte damit "Manuell". Wie bei der
+// Rampe (rampReactionObserved) zaehlt jetzt nur die GEMELDETE Belichtungszeit:
+// zwischen Test- und Rueckstellwert muss sie sich deutlich (>max(2, 20 % der
+// Basis)) und in Richtung der Stoerung bewegen. Helligkeit bleibt Zusatzinfo
+// im Trail, ist aber nie allein Beleg.
+function verifyReactionObserved(base,testReq,liveTest,liveBack){
+  if(!(base>0)||!Number.isFinite(testReq)||testReq===base) return false;
+  return Number.isFinite(liveTest)&&Number.isFinite(liveBack)&&
+    Math.abs(liveTest-liveBack)>Math.max(2,0.2*base)&&
+    ((testReq>base)===(liveTest>liveBack));
 }
 /* ===PURE-PIPELINE-END=== */
 
@@ -1507,12 +1529,10 @@ async function tuneExposure(track,cap,startReq){
         await new Promise(r=>setTimeout(r,VERIFY_SETTLE_MS));
         y=await sampleFrameYPwm(); // v3.3.15: PWM-robust - ein dunkles PWM-Frame hier verwarf sonst den nachgewiesenen Lock
         const liveBack=track.getSettings().exposureTime;
-        const yMoved=Math.abs(testY-y)>5;
-        const settingsMoved=Number.isFinite(liveTest)&&Number.isFinite(liveBack)&&
-          Math.abs(liveTest-liveBack)>Math.max(2,0.2*base)&&
-          ((testReq>base)===(liveTest>liveBack));
-        if(yMoved||settingsMoved){
-          trail.push(Math.round(base)+'→'+Math.round(testReq)+'(verify'+(yMoved?'Y':'')+(settingsMoved?'S':'')+')');
+        const yMoved=Math.abs(testY-y)>5; // nur Zusatzinfo im Trail, kein Beleg
+        const settingsMoved=verifyReactionObserved(base,testReq,liveTest,liveBack);
+        if(settingsMoved){
+          trail.push(Math.round(base)+'→'+Math.round(testReq)+'(verifyS'+(yMoved?'Y':'')+')');
         }
       }catch(e){/* Verify fehlgeschlagen - trail bleibt bei length===1, kein Beleg, korrekt konservativ */}
     }
@@ -1520,7 +1540,7 @@ async function tuneExposure(track,cap,startReq){
   const targetBandMet=y>=25&&y<=220;
   // v3.3.15 FIX (Review/Tin): Verify-Beleg VOR der Abbruch-Logik auswerten.
   // '(verify' landet nur im Trail, wenn Ursache-Wirkung tatsächlich
-  // beobachtet wurde (yMoved||settingsMoved). Ist der Lock damit bewiesen,
+  // beobachtet wurde (seit v3.4.25 nur settingsMoved, s. verifyReactionObserved). Ist der Lock damit bewiesen,
   // aber das (jetzt PWM-robuste) End-Y trotzdem außerhalb des Bands, darf
   // weder die Kamera auf 'continuous' zurückgesetzt noch der Pfad abgebrochen
   // werden - der Reset hier würde sonst physisch Auto-Belichtung

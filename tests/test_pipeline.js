@@ -23,7 +23,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
   RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
-  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved };`)();
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -1310,6 +1310,42 @@ t('Altkalibrierung ist sichtbar: Anzeige, Unsicherheitszeile, Export', () => {
   assert.ok(/Kalibrierung mit altem ISO-Modell/.test(html));
   assert.ok(/calibIsoModell:/.test(html) && /'calibGeltung','calibIsoModell'/.test(html));
   assert.ok(/nicht zuverlässig quantifizierbar/.test(html), 'Anzeige fuer unquantifizierbare Unsicherheit fehlt');
+});
+
+console.log('== v3.4.25: Verify-Nachweis, Rohwert 0 in der Null-Zone ==');
+t('Regression: Verify - Kamera ignoriert alles, nur das Licht wechselt (150 -> 100) -> kein Nachweis', () => {
+  // base=100, Test x2; gemeldete Zeit bleibt 100 bei Test und Rueckstellung
+  assert.strictEqual(P.verifyReactionObserved(100, 200, 100, 100), false);
+  assert.strictEqual(P.verifyReactionObserved(100, 50, 100, 100), false);
+});
+t('Verify: richtungskonsistente gemeldete Belichtungszeit zaehlt (auch A17-Quantisierung 99.98 -> ~200)', () => {
+  assert.strictEqual(P.verifyReactionObserved(99.98, 199.96, 200, 100), true);
+  assert.strictEqual(P.verifyReactionObserved(400, 200, 200, 400), true);
+});
+t('Verify: gegenlaeufig / zu klein / fehlende Daten -> kein Nachweis', () => {
+  assert.strictEqual(P.verifyReactionObserved(100, 200, 100, 200), false, 'gegenlaeufig');
+  assert.strictEqual(P.verifyReactionObserved(100, 200, 110, 100), false, 'unter 20 %');
+  assert.strictEqual(P.verifyReactionObserved(100, 200, undefined, 100), false);
+  assert.strictEqual(P.verifyReactionObserved(0, 200, 200, 100), false);
+  assert.strictEqual(P.verifyReactionObserved(100, 100, 200, 100), false, 'keine Stoerung');
+});
+t('Verdrahtung: Verify-Trail nur bei Settings-Beleg, Helligkeit allein nie', () => {
+  assert.ok(!/if\(yMoved\|\|settingsMoved\)/.test(html), 'alte Oder-Bedingung noch da');
+  assert.ok(/const settingsMoved=verifyReactionObserved\(base,testReq,liveTest,liveBack\);\s*if\(settingsMoved\)\{/.test(html));
+});
+t('Regression: Rohwert exakt 0, Steigung 1, Offset -100 -> nicht quantifizierbar', () => {
+  assert.strictEqual(P.affineUncertaintyGain(0, 1, -100), Infinity);
+  const u = P.computeUncertainty({ calibrated: true, profileU: 0.05, autoMode: false, temporalCV: 0, yMeanLin: 0 });
+  const r = P.propagateAffineUncertainty(u, 0, 1, -100);
+  assert.strictEqual(r.unquantifiable, true);
+  assert.strictEqual(r.uRel, null);
+});
+t('Rohwert 0: positiver/kein Offset bleibt neutral, ungueltige Eingaben ebenso', () => {
+  assert.strictEqual(P.affineUncertaintyGain(0, 1, 50), 1);
+  assert.strictEqual(P.affineUncertaintyGain(0, 1, 0), 1);
+  assert.strictEqual(P.affineUncertaintyGain(NaN, 1, -100), 1);
+  assert.strictEqual(P.affineUncertaintyGain(-5, 1, -100), Infinity, 'negativer Rohwert wie 0');
+  assert.strictEqual(P.affineUncertaintyGain(0, 0, -100), 1, 'ungueltige Steigung');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
