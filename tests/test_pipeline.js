@@ -22,7 +22,8 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_MAX };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -619,7 +620,7 @@ t('Verdrahtung: Software-Poll nutzt readLiveExposure und den schnelleren Takt', 
   const n = Number(html.match(/const SW_POLL_INTERVAL=(\d+)/)[1]);
   assert.ok(n >= 5 && n <= 30, 'SW_POLL_INTERVAL=' + n + ' (bei 60 fps ~' + (n / 60 * 1000).toFixed(0) + ' ms)');
   assert.ok(/exposureReported:false,isoReported:false/.test(html), 'Startzustand ist nicht "nicht gemeldet"');
-  assert.ok(/\+\(exposureGuessed\?' · Belichtung nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
+  assert.ok(/\+\(exposureGuessed\?' · Belichtung\/ISO nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
 });
 
 console.log('== Kalman-Reset beim Moduswechsel (v3.4.6) ==');
@@ -1155,6 +1156,59 @@ t('Dokumentierte Einzelschwellen des Gates stimmen mit den Rampen ueberein', () 
   assert.ok(Math.abs(nur({ temporalCV: 0.158 }) - P.Q_GATE_HOLD) < 0.02, 'tCV 15.8% ~ Gate');
   assert.ok(Math.abs(nur({ uniformityCV: 0.136 }) - 0.85) < 0.02, 'CV 13.6% ~ 0.85');
   assert.ok(Math.abs(nur({ temporalCV: 0.076 }) - 0.85) < 0.02, 'tCV 7.6% ~ 0.85');
+});
+
+console.log('== v3.4.22: kanalweiser Schwarzwert, stetiger ISO-Faktor, affine Unsicherheit ==');
+t('Kanalweiser Schwarzwert: Dunkelframe RGB 10/20/30 ergibt nach eigener Korrektur exakt 0', () => {
+  const d = makeFrame(() => [10, 20, 30]);
+  const bl = { r: LUT[10], g: LUT[20], b: LUT[30] };
+  const f = P.analyzeFrame(d, W, H, 4, LUT, bl);
+  assert.strictEqual(f.avgR_lin, 0); assert.strictEqual(f.avgG_lin, 0); assert.strictEqual(f.avgB_lin, 0);
+  assert.strictEqual(f.yMean_lin, 0);
+});
+t('Skalarer Schwarzwert verhaelt sich wie {r,g,b} gleich (Rueckwaertskompatibilitaet)', () => {
+  const a = P.analyzeFrame(uniform(128), W, H, 4, LUT, 0.03);
+  const b = P.analyzeFrame(uniform(128), W, H, 4, LUT, { r: 0.03, g: 0.03, b: 0.03 });
+  approx(a.yMean_lin, b.yMean_lin, 1e-12); approx(a.avgB_lin, b.avgB_lin, 1e-12);
+});
+t('normalizeBlackLevel: ungueltige/negative Werte -> 0', () => {
+  assert.deepStrictEqual(P.normalizeBlackLevel(NaN), { r: 0, g: 0, b: 0 });
+  assert.deepStrictEqual(P.normalizeBlackLevel({ r: -1, g: 0.1, b: undefined }), { r: 0, g: 0.1, b: 0 });
+  assert.deepStrictEqual(P.normalizeBlackLevel(null), { r: 0, g: 0, b: 0 });
+});
+t('ISO-Faktor: Stuetzwerte 1.00/0.95/0.88 und stetig (kein Sprung bei 400->401, 800->801)', () => {
+  approx(P.isoCalibFactor(100), 1, 1e-12); approx(P.isoCalibFactor(400), 1, 1e-12);
+  approx(P.isoCalibFactor(800), 0.95, 1e-12); approx(P.isoCalibFactor(1600), 0.88, 1e-12);
+  approx(P.isoCalibFactor(6400), 0.88, 1e-12);
+  assert.ok(Math.abs(P.isoCalibFactor(401) - P.isoCalibFactor(400)) < 1e-3, 'Sprung bei 400');
+  assert.ok(Math.abs(P.isoCalibFactor(801) - P.isoCalibFactor(800)) < 1e-3, 'Sprung bei 800');
+  assert.strictEqual(P.isoCalibFactor(0), 1); assert.strictEqual(P.isoCalibFactor(NaN), 1);
+});
+t('ISO-Faktor monoton fallend ueber den gesamten Bereich', () => {
+  let prev = P.isoCalibFactor(50);
+  for (let iso = 51; iso <= 3200; iso++) { const v = P.isoCalibFactor(iso); assert.ok(v <= prev + 1e-12, 'ISO ' + iso); prev = v; }
+});
+t('Affiner Unsicherheits-Faktor: ohne Offset 1, negativer Offset >1 und waechst zur Null-Zone', () => {
+  assert.strictEqual(P.affineUncertaintyGain(100, 1, 0), 1);
+  assert.strictEqual(P.affineUncertaintyGain(100, 1, 5), 1, 'positiver Offset darf nicht entlasten');
+  approx(P.affineUncertaintyGain(100, 1, -50), 2, 1e-12);
+  assert.ok(P.affineUncertaintyGain(60, 1, -50) > P.affineUncertaintyGain(100, 1, -50));
+  assert.strictEqual(P.affineUncertaintyGain(40, 1, -50), P.AFFINE_GAIN_MAX, 'Null-Zone -> Obergrenze');
+  assert.strictEqual(P.affineUncertaintyGain(50.0001, 1, -50), P.AFFINE_GAIN_MAX, 'direkt an der Nullstelle gedeckelt');
+});
+t('propagateAffineUncertainty skaliert uRel/uSys/uRand, Eingabe bleibt unveraendert', () => {
+  const u = P.computeUncertainty({ calibrated: true, profileU: 0.05, autoMode: false, temporalCV: 0.01, yMeanLin: 0.2 });
+  const before = JSON.stringify(u);
+  const p = P.propagateAffineUncertainty(u, 100, 1, -50);
+  approx(p.uRel, u.uRel * 2, 1e-12); approx(p.uSys, u.uSys * 2, 1e-12); approx(p.uRand, u.uRand * 2, 1e-12);
+  assert.strictEqual(JSON.stringify(u), before, 'Eingabeobjekt mutiert');
+  assert.strictEqual(P.propagateAffineUncertainty(u, 100, 1, 0).uRel, u.uRel);
+});
+t('Integration: Anzeige-Pipeline nutzt kanalweisen Schwarzwert und Fortpflanzung', () => {
+  assert.ok(/gammaLUT,blackLevelRGB\)/.test(html), 'analyzeFrame bekommt nicht den kanalweisen Schwarzwert');
+  assert.ok(/propagateAffineUncertainty\(lastUncertainty,currentRawPPFDUncalibrated,customCalibFactor,calibOffset\)/.test(html), 'Fortpflanzung nicht verdrahtet');
+  assert.ok(/1284\*isoCalibFactor\(iso\)/.test(html), 'stetiger ISO-Faktor nicht verdrahtet');
+  assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(html), 'isoReported wird nicht ausgewertet');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
