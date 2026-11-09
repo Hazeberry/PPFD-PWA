@@ -421,7 +421,7 @@ t('Die Warnung steht in einem eigenen Element, nicht in der Unsicherheitszeile',
   const skript=html.match(/<script>([\s\S]*)<\/script>/)[1];
   assert.ok(/id="calibRangeVal"/.test(html),'Element fehlt');
   assert.ok(/setCalibRangeLine\(calibRangeSuffix\(lastRange\)\)/.test(skript),'nicht verdrahtet');
-  const uz=skript.match(/uncertaintyVal'\)\.textContent='Unsicherheit[\s\S]{0,300}?;/)[0];
+  const uz=skript.match(/uncertaintyVal'\)\.textContent=\(uQuantifiable[\s\S]{0,600}?;/)[0];
   assert.ok(!/calibRangeSuffix/.test(uz),'Warnung haengt weiter an der Unsicherheitszeile');
 });
 

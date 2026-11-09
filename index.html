@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.21</title>
+<title>PPFD Meter Pro v3.4.26</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.21</span>
+  <span class="app-title">PPFD Meter Pro v3.4.26</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.21 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.26 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -217,7 +217,12 @@
     Neustart-Hinweis bei dauerhaft schwachem Signal nach einer Belichtungs-Stufe<br>
     Unsicherheit ohne 95-%-Behauptung · 660-nm-Hinweis und Linearisierung präzisiert<br>
     Einschwingen statt „Aufwärmen“ (keine Temperatur-Korrektur) · Kalibrieren erst nach dem Einschwingen<br>
-    Gehaltener Wert abgedunkelt mit Abzeichen · „Belichtung nicht gemeldet“ im Software-Fallback · Service Worker räumt nur eigene Caches<br>
+    Gehaltener Wert abgedunkelt mit Abzeichen · „Belichtung/ISO nicht gemeldet“ im Software-Fallback · Service Worker räumt nur eigene Caches<br>
+    Kanalweiser Schwarzwert · Stetiger ISO-Faktor · Unsicherheit durch affine Kalibrierung fortgepflanzt<br>
+    Schwarzwert beim Start geladen · Manuell-Nachweis nur durch beobachtete Reaktion · Kalibrieren gesperrt bei Profilwechsel und geschlossenem Q-Gate<br>
+    Manuell-Nachweis nur über gemeldete Belichtungszeit · Unsicherheit nahe Kalibrier-Nullpunkt „nicht quantifizierbar“ · Altkalibrierung (altes ISO-Modell) gekennzeichnet<br>
+    Verify-Nachweis nur über gemeldete Belichtungszeit · Null-Zone auch bei Rohwert 0 erkannt<br>
+    „Belichtung/ISO nicht gemeldet“ auch im Manuell-Modus · Manuell nur mit Beleg (kein stiller Durchlass ohne Modus-Meldung)<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -312,8 +317,23 @@ function classifySignal(yMeanLin){
   return{level:'ok',label:'OK',color:'var(--green)'};
 }
 
+// v3.4.22: Schwarzwert kann eine Zahl (alle Kanaele gleich, bisheriges
+// Verhalten) oder {r,g,b} (kanalweise) sein. Vorher wurde ein gemeinsamer
+// Helligkeitswert von JEDEM Kanal abgezogen und jeder Kanal einzeln auf 0
+// geklemmt: bei unterschiedlichen Dunkelwerten blieb ein kuenstliches
+// Farbsignal uebrig (Dunkelframe RGB 10/20/30 ergab nach eigener Korrektur
+// weiterhin Signal).
+function normalizeBlackLevel(bl){
+  if(bl&&typeof bl==='object'){
+    const f=v=>(Number.isFinite(v)&&v>0)?v:0;
+    return{r:f(bl.r),g:f(bl.g),b:f(bl.b)};
+  }
+  const v=(Number.isFinite(bl)&&bl>0)?bl:0;
+  return{r:v,g:v,b:v};
+}
 function analyzeFrame(data,width,height,pixelStep,lut,blackLevelLin){
-  blackLevelLin=blackLevelLin||0;
+  const bk=normalizeBlackLevel(blackLevelLin);
+  const bkR=bk.r,bkG=bk.g,bkB=bk.b;
   let sumR_lin=0,sumG_lin=0,sumB_lin=0,sumY_lin=0;
   let sumR_gamma=0,sumG_gamma=0,sumB_gamma=0,sumY_gamma=0;
   let clippingPixels=0,sampledPixels=0;
@@ -325,7 +345,7 @@ function analyzeFrame(data,width,height,pixelStep,lut,blackLevelLin){
   for(let i=0;i<len;i+=stride){
     const rg=data[i],gg=data[i+1],bg=data[i+2];
     if(rg>250||gg>250||bg>250) clippingPixels++;
-    const rl=Math.max(0,lut[rg]-blackLevelLin),gl=Math.max(0,lut[gg]-blackLevelLin),bl=Math.max(0,lut[bg]-blackLevelLin);
+    const rl=Math.max(0,lut[rg]-bkR),gl=Math.max(0,lut[gg]-bkG),bl=Math.max(0,lut[bg]-bkB);
     sumR_lin+=rl;sumG_lin+=gl;sumB_lin+=bl;
     const yLin=Y_R*rl+Y_G*gl+Y_B*bl;
     sumY_lin+=yLin;
@@ -708,6 +728,54 @@ function computeUncertainty(o){
   return{uRel:uRel,uSys:uSys,uRand:uRand,uCal:uCal,uProfile:uProfile,uTemporal:uTemporal,uNoise:uNoise};
 }
 
+// v3.4.22: Fortpflanzung durch die affine Kalibrierung ppfd = slope*raw+offset.
+// computeUncertainty() liefert eine RELATIVE Unsicherheit bezogen auf den
+// unkalibrierten Rohwert. Die absolute Unsicherheit der Steigung ist
+// slope*raw*u; bezogen auf das Ergebnis slope*raw+offset ergibt sich der Faktor
+// g = slope*raw/(slope*raw+offset). Bei negativem Offset (Zwei-Punkt-Fit) ist
+// g>1 und waechst gegen die Null-Zone unbegrenzt. Positiver Offset wuerde g<1
+// geben; das wird NICHT als Entlastung gewertet (der Offset ist selbst
+// unsicher, seine Groesse ohne Vergleichsmessungen nicht bezifferbar), g>=1.
+// v3.4.24 FIX: Keine kuenstliche Obergrenze mehr - ein gekappter Faktor
+// (raw=100.01, offset=-100: rechnerisch 10001, ausgewiesen 10) zeigte nahe der
+// Nullstelle eine viel zu kleine Unsicherheit. Stattdessen: ab g>AFFINE_GAIN_LIMIT
+// (oder Ergebnis <=0) ist die relative Unsicherheit NICHT zuverlaessig
+// quantifizierbar (unquantifiable=true, uRel/uSys/uRand=null).
+const AFFINE_GAIN_LIMIT=5;
+// v3.4.25 FIX: Bei gueltiger Kalibrierung zuerst das ERGEBNIS pruefen. Vorher
+// lieferte !(raw>0) vorab Faktor 1 - bei Rohwert exakt 0 (schwarzer Frame) mit
+// Offset -100 zeigte die App 0,0 und "±52 %" statt "nicht quantifizierbar".
+// Ein negativer Rohwert kommt aus der Pipeline nicht vor; er wird wie 0
+// behandelt. Nicht-endlicher Rohwert: keine Aussage moeglich -> 1 (die
+// Anzeige ist dann ohnehin kein Messwert).
+function affineUncertaintyGain(raw,slope,offset){
+  if(!(slope>0)||!Number.isFinite(offset)||offset===0||!Number.isFinite(raw)) return 1;
+  const lin=slope*Math.max(0,raw),res=lin+offset;
+  if(!(res>0)) return Infinity;
+  if(!(lin>0)) return 1;
+  return Math.max(1,lin/res);
+}
+function propagateAffineUncertainty(u,raw,slope,offset){
+  const g=affineUncertaintyGain(raw,slope,offset);
+  if(g===1) return Object.assign({},u,{affineGain:1,unquantifiable:false});
+  if(g>AFFINE_GAIN_LIMIT) return Object.assign({},u,{uRel:null,uSys:null,uRand:null,affineGain:Number.isFinite(g)?g:null,unquantifiable:true});
+  return Object.assign({},u,{uRel:u.uRel*g,uSys:u.uSys*g,uRand:u.uRand*g,affineGain:g,unquantifiable:false});
+}
+
+// v3.4.22: ISO-Korrekturfaktor der Kalibrierkonstante, STETIG. Vorher Stufen
+// (>400: 0.95, >800: 0.88), d.h. bei ISO 400->401 ein Sprung um 5 %, bei
+// 800->801 um weitere 7,4 % - ohne belegte Geraeteeigenschaft. Die Stuetzwerte
+// bleiben die alten Platzhalter (1.00 bei 400, 0.95 bei 800, 0.88 bei 1600),
+// dazwischen wird linear in log2(ISO) interpoliert. Unter 400 bzw. ueber 1600
+// konstant. Ungueltige ISO -> 1 (neutral).
+function isoCalibFactor(iso){
+  if(!(iso>0)) return 1;
+  if(iso<=400) return 1;
+  if(iso>=1600) return 0.88;
+  const x=Math.log2(iso/400); // 0..2
+  return x<=1?1-0.05*x:0.95-0.07*(x-1);
+}
+
 // v3.4.0: Zwei-Punkt-Kalibrierung. Aus bis zu zwei Referenzpunkten
 // ({raw:rawPPFDUncalibrated, ref:referenzPPFD}) eine affine Korrektur
 // bestimmen: ppfd = slope*raw + offset. Ein Punkt => offset 0 (bisheriges
@@ -819,6 +887,50 @@ function heldReason(o){
   if(!o.qGateOpen) return{kind:'gate',weakest:o.gateWeakest};
   return null;
 }
+// v3.4.22: Hat die Kamera auf einen Rampen-Schritt BEOBACHTBAR reagiert?
+// Vorher galt trail.length>1 (= mehrere Stellversuche) als Nachweis der
+// manuellen Kontrolle - das belegt nur, dass die App es versucht hat.
+// v3.4.24 FIX: Eine Helligkeitsaenderung allein belegt KEINE Kamerakontrolle
+// (die Szene kann heller werden, waehrend die Kamera alle Stellbefehle
+// ignoriert und weiter automatisch belichtet). Beleg ist deshalb nur die
+// GEMELDETE Belichtungszeit: sie muss sich richtungskonsistent (>20 %) bewegen.
+// step={dir:+1|-1 (Belichtung laenger/kuerzer), liveBefore}.
+// Meldet ein Geraet keine Belichtungszeit, gibt es hier keinen Beleg - dann
+// entscheidet der Verify-Schritt bzw. die ehrliche Software-Rueckfall-Logik.
+function rampReactionObserved(step,liveNow){
+  if(!step||!(step.dir===1||step.dir===-1)) return false;
+  const lb=step.liveBefore;
+  return Number.isFinite(lb)&&Number.isFinite(liveNow)&&
+    Math.abs(liveNow-lb)>Math.max(2,0.2*lb)&&((liveNow>lb)===(step.dir>0));
+}
+// v3.4.25 FIX: Beleg des Verify-Schritts in tuneExposure. Bisher genuegte
+// yMoved||settingsMoved - eine reine Helligkeitsaenderung (Lichtwechsel 150->100
+// waehrend die Kamera alle Befehle ignoriert, 'continuous' meldet und die
+// Belichtungszeit unveraendert laesst) bestaetigte damit "Manuell". Wie bei der
+// Rampe (rampReactionObserved) zaehlt jetzt nur die GEMELDETE Belichtungszeit:
+// zwischen Test- und Rueckstellwert muss sie sich deutlich (>max(2, 20 % der
+// Basis)) und in Richtung der Stoerung bewegen. Helligkeit bleibt Zusatzinfo
+// im Trail, ist aber nie allein Beleg.
+function verifyReactionObserved(base,testReq,liveTest,liveBack){
+  if(!(base>0)||!Number.isFinite(testReq)||testReq===base) return false;
+  return Number.isFinite(liveTest)&&Number.isFinite(liveBack)&&
+    Math.abs(liveTest-liveBack)>Math.max(2,0.2*base)&&
+    ((testReq>base)===(liveTest>liveBack));
+}
+// v3.4.26 FIX: Ist der Manuell-Modus belegt? Bisher genuegte '!ns.exposureMode':
+// ein Geraet, das weder Modus noch Belichtungszeit meldet, galt ohne jeden
+// Beleg als "Manuell" - und weil exposureGuessed den Manuell-Modus pauschal
+// ausnahm, fehlte dann auch der Hinweis "Belichtung/ISO nicht gemeldet".
+// Beleg ist jetzt nur: gemeldeter Modus 'manual', gemeldete Belichtungszeit
+// gleich der angeforderten (+-2 Einheiten), oder eine beobachtete Reaktion
+// (Rampe/Verify, s. rampReactionObserved/verifyReactionObserved).
+// Wurde keine manuelle Belichtung angefordert, gibt es nichts zu belegen.
+function confirmManualExposure(o){
+  if(!o.attempted) return true;
+  if(o.reportedMode==='manual') return true;
+  const expMatch=Number.isFinite(o.liveExp)&&Number.isFinite(o.requestedExp)&&Math.abs(o.liveExp-o.requestedExp)<=2;
+  return expMatch||!!o.rampVerified;
+}
 /* ===PURE-PIPELINE-END=== */
 
 class SoftwareGainController {
@@ -857,6 +969,9 @@ const appFSM=new AppStatusStateMachine();
 let isMeasuring=false,currentFactor=0.0185,currentLightSourceName='SUNLIGHT';
 let isStarting=false;
 let lastAiUpdate=0,hardwareSettings=null,useSoftwareGain=false;
+// v3.4.22: nach einem Lichtprofil-Wechsel ist currentRawPPFDUncalibrated bis zum
+// ersten Frame mit dem NEUEN Profil noch mit dem alten Faktor gerechnet.
+let profileSwitchPending=false;
 let wbManual=false;
 let customCalibFactor=null,activeStream=null,currentRawPPFD=0,currentRawPPFDUncalibrated=0,frameCount=0,animationFrameId=null;
 let blackFrameCount=0,blackFrameStage=0;
@@ -943,12 +1058,28 @@ let canvasFailStreak=0;
 const CANVAS_FAIL_LIMIT=30;
 const CLIP_ESCALATE_FRAMES=90;
 const CALIB_KEY='ppfd_calibFactor_v2';
+// v3.4.22 FIX: Die Schwarzwert-Schluessel muessen VOR dem ersten
+// loadBlackLevel()-Aufruf (unten, beim Seitenstart) initialisiert sein. Vorher
+// standen sie weiter hinten: der Aufruf lief in die Temporal Dead Zone, der
+// ReferenceError wurde vom try/catch verschluckt und der gespeicherte Wert
+// stillschweigend auf 0 gesetzt (erst ein spaeteres Laden, z.B. beim
+// Kamerawechsel, las ihn korrekt).
+const BLACKLEVEL_KEY='ppfd_blackLevel_v1';
+const BLACKLEVEL_RGB_KEY='ppfd_blackLevelRGB_v1';
 // v3.4.0: Zwei-Punkt-Kalibrierung. Neuer Storage (JSON {p1,p2} pro Kamera);
 // der Legacy-Faktor (CALIB_KEY) bleibt als reine Steigung lesbar und wird
 // beim ersten Speichern eines neuen Punktes ersetzt. customCalibFactor
 // fungiert weiterhin als STEIGUNG, calibOffset als additiver Term.
 const CALIB2_KEY='ppfd_calib2_v1';
 let calibOffset=0,calibPoints=0;
+// v3.4.24: Die ISO-Kurve (isoCalibFactor) wurde in v3.4.22 geaendert; die Rohwerte
+// frueher gespeicherter Kalibrierpunkte basieren auf der alten Stufenfunktion.
+// Neue Speicherstaende tragen isoModel:2. Alles andere gilt als 'altes ISO-Modell':
+// bei ISO 401-1599 weicht der Rohwert um bis zu ~5-7 % ab, ohne dass die
+// Kalibrierung das weiss. Sie wird weiter angewendet (Nutzerdaten werden nicht
+// stillschweigend entwertet), aber gekennzeichnet - Neukalibrierung empfohlen.
+const ISO_MODEL=2;
+let calibIsoLegacy=false;
 // v3.4.10: Stuetzstellen der aktiven Kalibrierung, damit calibRangeStatus()
 // pro Frame ohne localStorage-Zugriff auskommt. Werden bei jedem Laden und
 // jedem Speichern mitgefuehrt; null = Bereich unbekannt (Legacy-Faktor ohne
@@ -971,12 +1102,13 @@ function calibLegacyKey(){return CALIB2_KEY+'_'+cameraFacing;}
 function readCalib2(key){try{return JSON.parse(localStorage.getItem(key))||null;}catch(e){return null;}}
 function loadCalib2Data(){return readCalib2(calibStorageKey());}
 function loadCalib(){
-  calibLegacyScope=false;
+  calibLegacyScope=false;calibIsoLegacy=false;
   calibP1=null;calibP2=null;calibFit=null;
   const d=loadCalib2Data();
   if(d){
     const c=computeCalib2(d.p1||null,d.p2||null);
     if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;
+      calibIsoLegacy=!(d.isoModel>=ISO_MODEL);
       calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c;return;}
   }
   // Legacy-Fallback: vor v3.4.3 gespeicherte Kalibrierung (nur pro Kamera).
@@ -987,11 +1119,12 @@ function loadCalib(){
   if(legacy){
     const c=computeCalib2(legacy.p1||null,legacy.p2||null);
     if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=true;
+      calibIsoLegacy=!(legacy.isoModel>=ISO_MODEL);
       calibP1=legacy.p1||null;calibP2=legacy.p2||null;calibFit=c;return;}
   }
   customCalibFactor=loadCalibFactor();calibOffset=0;calibPoints=customCalibFactor!==null?1:0;
   if(customCalibFactor!==null){
-    calibLegacyScope=true;
+    calibLegacyScope=true;calibIsoLegacy=true;
     // v3.4.11 FIX (Review/tin): Auch der ganz alte Steigungs-Faktor (CALIB_KEY,
     // v3.3.x) braucht einen calibFit - sonst meldet calibRangeStatus() den
     // Zustand 'uncalibrated', WAEHREND die App kalibriert ist, und die
@@ -1021,8 +1154,10 @@ function migrateCalibrationStorage(){
 }
 let cameraFacing=(()=>{try{return localStorage.getItem('ppfd_camera')||'user';}catch(e){return 'user';}})();
 loadCalib(); // v3.4.0: bevorzugt Zwei-Punkt-Storage, Legacy-Faktor als Fallback
-let blackLevelLin=0;
-blackLevelLin=loadBlackLevel();
+const ISO_LEGACY_MSG='Gespeicherte Kalibrierung stammt aus einer Version mit anderer ISO-Kurve – Werte bei ISO 401–1599 können um bis zu ~5–7 % abweichen. Bitte neu kalibrieren.';
+if(calibIsoLegacy) setTimeout(()=>showError(ISO_LEGACY_MSG),2500);
+let blackLevelLin=0,blackLevelRGB={r:0,g:0,b:0};
+blackLevelRGB=loadBlackLevel();blackLevelLin=blackLevelY(blackLevelRGB);
 
 let lastFrameTime=0,smoothedFps=30;
 let pixelStep=4,stepTransitionAccum=0;
@@ -1159,8 +1294,7 @@ function getDynamicCalibrationConstant(iso,exposureTime){
   // (customCalibFactor); diese Konstante nur anfassen, wenn der verteilte
   // Kalibrier-Datensatz (CSV-Felder linearization/qualityQ/uRel machen
   // Punkte vergleichbar) eine fundierte Neubestimmung erlaubt.
-  let c=1284;
-  if(iso>800) c*=0.88;else if(iso>400) c*=0.95;
+  let c=1284*isoCalibFactor(iso);
   if(exposureTime>1/30) c*=0.98;
   return c;
 }
@@ -1200,9 +1334,22 @@ async function sampleFrameYPwm(){
 const VERIFY_SETTLE_MS=500;
 const VERIFY_COST_MS=2*VERIFY_SETTLE_MS+2*(PWM_SAMPLE_EXTRA*PWM_SAMPLE_GAP_MS)+120;
 
-const BLACKLEVEL_KEY='ppfd_blackLevel_v1';
+// v3.4.22: kanalweise Referenz. Neuer Key (JSON {r,g,b}); der alte Skalar-Key
+// bleibt als Fallback lesbar (alle Kanaele gleich = bisheriges Verhalten).
+function blackLevelY(bk){return Y_R*bk.r+Y_G*bk.g+Y_B*bk.b;}
 function loadBlackLevel(){
-  try{const v=parseFloat(localStorage.getItem(BLACKLEVEL_KEY+'_'+cameraFacing));return Number.isFinite(v)&&v>=0?v:0;}catch(e){return 0;}
+  const zero={r:0,g:0,b:0};
+  try{
+    const raw=localStorage.getItem(BLACKLEVEL_RGB_KEY+'_'+cameraFacing);
+    if(raw){
+      const o=JSON.parse(raw);
+      if(o&&[o.r,o.g,o.b].every(v=>Number.isFinite(v)&&v>=0)) return{r:o.r,g:o.g,b:o.b};
+    }
+  }catch(e){}
+  try{
+    const v=parseFloat(localStorage.getItem(BLACKLEVEL_KEY+'_'+cameraFacing));
+    return Number.isFinite(v)&&v>=0?{r:v,g:v,b:v}:zero;
+  }catch(e){return zero;}
 }
 async function measureBlackLevel(){
   if(!isMeasuring){showError('Erst Messung starten, dann Linse komplett abdecken.');return;}
@@ -1228,28 +1375,34 @@ async function measureBlackLevel(){
   try{
     await new Promise(r=>setTimeout(r,1500));
     const SAMPLES=10;
-    let sum=0;
+    // v3.4.22: Dunkelwerte je Kanal mitteln (nicht nur Y), damit die Korrektur
+    // in analyzeFrame kanalweise abziehen kann.
+    let sumR=0,sumG=0,sumB=0;
     for(let i=0;i<SAMPLES;i++){
       if(measurementAborted()){showError('Schwarzwertmessung abgebrochen (Kamera gestoppt oder gewechselt).');return;}
       ctx.drawImage(video,0,0,PROC_W,PROC_H);
       const d=ctx.getImageData(0,0,PROC_W,PROC_H).data;
-      let ySum=0,n=0;
+      let rS=0,gS=0,bS=0,n=0;
       for(let j=0;j<d.length;j+=16){
-        const rl=gammaLUT[d[j]],gl=gammaLUT[d[j+1]],bl=gammaLUT[d[j+2]];
-        ySum+=Y_R*rl+Y_G*gl+Y_B*bl;n++;
+        rS+=gammaLUT[d[j]];gS+=gammaLUT[d[j+1]];bS+=gammaLUT[d[j+2]];n++;
       }
-      sum+=ySum/n;
+      sumR+=rS/n;sumG+=gS/n;sumB+=bS/n;
       await new Promise(r=>setTimeout(r,100));
     }
-    const measured=sum/SAMPLES;
+    const measuredRGB={r:sumR/SAMPLES,g:sumG/SAMPLES,b:sumB/SAMPLES};
+    const measured=blackLevelY(measuredRGB);
     if(measurementAborted()){showError('Schwarzwertmessung abgebrochen (Kamera gestoppt oder gewechselt).');return;}
     if(measured>0.02){
       showError('Gemessener Wert zu hoch ('+measured.toFixed(4)+') – Linse richtig abdecken und erneut versuchen.');
       return;
     }
+    blackLevelRGB=measuredRGB;
     blackLevelLin=measured;
-    try{localStorage.setItem(BLACKLEVEL_KEY+'_'+startFacing,blackLevelLin);}catch(e){}
-    showError('Schwarzwert gemessen: '+blackLevelLin.toFixed(5)+' (linear) – gespeichert.');
+    try{
+      localStorage.setItem(BLACKLEVEL_RGB_KEY+'_'+startFacing,JSON.stringify(measuredRGB));
+      localStorage.setItem(BLACKLEVEL_KEY+'_'+startFacing,blackLevelLin); // Legacy-Key (Y)
+    }catch(e){}
+    showError('Schwarzwert gemessen: '+blackLevelLin.toFixed(5)+' (linear, je Kanal gespeichert).');
     updateBlackLevelNote();
     playPing();
   }finally{
@@ -1289,8 +1442,8 @@ function playPing(){
   }catch(e){console.warn('[PPFD] Ping-Sound fehlgeschlagen:',e);}
 }
 function resetBlackLevel(){
-  blackLevelLin=0;
-  try{localStorage.removeItem(BLACKLEVEL_KEY+'_'+cameraFacing);}catch(e){}
+  blackLevelLin=0;blackLevelRGB={r:0,g:0,b:0};
+  try{localStorage.removeItem(BLACKLEVEL_KEY+'_'+cameraFacing);localStorage.removeItem(BLACKLEVEL_RGB_KEY+'_'+cameraFacing);}catch(e){}
   showError('Schwarzwert-Referenz zurückgesetzt (0, keine Subtraktion).');
   updateBlackLevelNote();
 }
@@ -1313,18 +1466,26 @@ async function tuneExposure(track,cap,startReq){
   let req=startReq,trail=[startReq],y=0;
   const capMin=cap.exposureTime?.min??startReq,capMax=cap.exposureTime?.max??startReq;
   let prevY=sampleFrameY();
+  // v3.4.22: beobachtete Reaktion auf die Rampen-Schritte (s. rampReactionObserved).
+  let rampEvidence=false,pendingStep=null;
   for(let iter=0;iter<6;iter++){
     if(performance.now()>deadline) break;
     await new Promise(r=>setTimeout(r,500));
     y=sampleFrameY();
     let stall=0;
     while(Math.abs(y-prevY)<2&&stall<5&&performance.now()<deadline){await new Promise(r=>setTimeout(r,200));y=sampleFrameY();stall++;}
+    if(pendingStep){
+      if(rampReactionObserved(pendingStep,track.getSettings().exposureTime)) rampEvidence=true;
+      pendingStep=null;
+    }
     prevY=y;
     if(y<25&&req<capMax){
+      pendingStep={dir:1,liveBefore:track.getSettings().exposureTime};
       req=Math.min(req*4,capMax);
       try{await track.applyConstraints({advanced:[{exposureTime:req}]});}catch(e){break;}
       trail.push(req);
     }else if(y>220&&req>capMin){
+      pendingStep={dir:-1,liveBefore:track.getSettings().exposureTime};
       req=Math.max(req/4,capMin);
       try{await track.applyConstraints({advanced:[{exposureTime:req}]});}catch(e){break;}
       trail.push(req);
@@ -1383,12 +1544,10 @@ async function tuneExposure(track,cap,startReq){
         await new Promise(r=>setTimeout(r,VERIFY_SETTLE_MS));
         y=await sampleFrameYPwm(); // v3.3.15: PWM-robust - ein dunkles PWM-Frame hier verwarf sonst den nachgewiesenen Lock
         const liveBack=track.getSettings().exposureTime;
-        const yMoved=Math.abs(testY-y)>5;
-        const settingsMoved=Number.isFinite(liveTest)&&Number.isFinite(liveBack)&&
-          Math.abs(liveTest-liveBack)>Math.max(2,0.2*base)&&
-          ((testReq>base)===(liveTest>liveBack));
-        if(yMoved||settingsMoved){
-          trail.push(Math.round(base)+'→'+Math.round(testReq)+'(verify'+(yMoved?'Y':'')+(settingsMoved?'S':'')+')');
+        const yMoved=Math.abs(testY-y)>5; // nur Zusatzinfo im Trail, kein Beleg
+        const settingsMoved=verifyReactionObserved(base,testReq,liveTest,liveBack);
+        if(settingsMoved){
+          trail.push(Math.round(base)+'→'+Math.round(testReq)+'(verifyS'+(yMoved?'Y':'')+')');
         }
       }catch(e){/* Verify fehlgeschlagen - trail bleibt bei length===1, kein Beleg, korrekt konservativ */}
     }
@@ -1396,14 +1555,14 @@ async function tuneExposure(track,cap,startReq){
   const targetBandMet=y>=25&&y<=220;
   // v3.3.15 FIX (Review/Tin): Verify-Beleg VOR der Abbruch-Logik auswerten.
   // '(verify' landet nur im Trail, wenn Ursache-Wirkung tatsächlich
-  // beobachtet wurde (yMoved||settingsMoved). Ist der Lock damit bewiesen,
+  // beobachtet wurde (seit v3.4.25 nur settingsMoved, s. verifyReactionObserved). Ist der Lock damit bewiesen,
   // aber das (jetzt PWM-robuste) End-Y trotzdem außerhalb des Bands, darf
   // weder die Kamera auf 'continuous' zurückgesetzt noch der Pfad abgebrochen
   // werden - der Reset hier würde sonst physisch Auto-Belichtung
   // hinterlassen, während die App später "Manuell" meldete.
   const hasVerify=trail.some(t=>typeof t==='string'&&t.includes('(verify'));
   if(!targetBandMet&&!hasVerify){try{await track.applyConstraints({advanced:[{exposureMode:'continuous'}]});}catch(e){}}
-  return {req,trail,finalY:y,targetBandMet,hasVerify};
+  return {req,trail,finalY:y,targetBandMet,hasVerify,rampEvidence};
 }
 
 async function applyHardwareConstraints(stream){
@@ -1440,7 +1599,9 @@ async function applyHardwareConstraints(stream){
         constraints.exposureTime=tuned.req;
         result.exposureTuneTrail=tuned.trail.join('→');
         result.exposureTuneY=tuned.finalY;
-        result.exposureTuneRampVerified=tuned.trail.length>1;
+        // v3.4.22 FIX: Nachweis = beobachtete Reaktion (Rampe) oder bestandener
+        // Verify-Schritt - nicht die blosse Zahl der Stellversuche.
+        result.exposureTuneRampVerified=!!(tuned.rampEvidence||tuned.hasVerify);
         // v3.3.15 FIX (Tin): War der Verify erfolgreich (hasVerify), ist der
         // Manual-Lock bewiesen - ein Bandverfehlen des End-Y darf den Pfad
         // dann nicht mehr abbrechen (tuneExposure hat in dem Fall auch nicht
@@ -1479,22 +1640,32 @@ async function applyHardwareConstraints(stream){
       document.getElementById('debugExpRow').style.display='flex';
       document.getElementById('debugExpVal').textContent=debugStr;
       console.log('[PPFD DEBUG]',debugStr);
-      result.iso=ns.iso||result.iso;
-      const rawExpSec=ns.exposureTime?ns.exposureTime*EXP_UNIT:result.exposureTime;
+      // v3.4.26 FIX: Ist-Werte und OB sie gemeldet wurden auch im Manuell-Pfad
+      // festhalten (vorher blieben exposureReported/isoReported hier immer false
+      // und die Anzeige nahm den Manuell-Modus pauschal aus). Ohne Meldung ist
+      // der ANGEFORDERTE Wert die beste Schaetzung - vorher wurde der Startwert
+      // von vor dem Stellbefehl benutzt.
+      const reqEstimate={
+        exposureTime:Number.isFinite(constraints.exposureTime)?constraints.exposureTime*EXP_UNIT:result.exposureTime,
+        iso:Number.isFinite(constraints.iso)?constraints.iso:result.iso
+      };
+      const rawExpSec=ns.exposureTime?ns.exposureTime*EXP_UNIT:reqEstimate.exposureTime;
       if(rawExpSec>2||rawExpSec<1e-6){
         console.warn('[PPFD] Unplausible exposureTime:',rawExpSec,'s – Einheiten-Mismatch? Fallback auf Software-Gain.');
         result.exposureTime=1/250;
         result.fallbackMode='exposure-unit-mismatch';
         return result;
       }
-      result.exposureTime=rawExpSec;
+      Object.assign(result,readLiveExposure(ns,reqEstimate,EXP_UNIT));
       result.frameRate=ns.frameRate||result.frameRate;
       const attemptedManualExposure=(constraints.exposureMode==='manual');
-      const expMatch=attemptedManualExposure && ns.exposureTime!==undefined && ns.exposureTime!==null &&
-        constraints.exposureTime!==undefined &&
-        Math.abs(ns.exposureTime-constraints.exposureTime)<=2;
-      const modeConfirmed=!attemptedManualExposure || !ns.exposureMode ||
-        ns.exposureMode==='manual' || expMatch || result.exposureTuneRampVerified;
+      const modeConfirmed=confirmManualExposure({
+        attempted:attemptedManualExposure,
+        reportedMode:ns.exposureMode,
+        liveExp:ns.exposureTime,
+        requestedExp:constraints.exposureTime,
+        rampVerified:result.exposureTuneRampVerified
+      });
       if(!modeConfirmed){
         console.warn('[PPFD] Weder exposureMode noch exposureTime bestätigen Manual-Lock: mode=',ns.exposureMode,'angefragt=',constraints.exposureTime,'live=',ns.exposureTime);
         try{await track.applyConstraints({advanced:[{exposureMode:'continuous'}]});}catch(e){}
@@ -1520,7 +1691,7 @@ function updateCalibDisplay(){
   const off=calibOffset!==0?' '+(calibOffset>0?'+':'−')+Math.abs(calibOffset).toFixed(1):'';
   // v3.4.3: Geltungsbereich sichtbar machen - eine Kalibrierung gilt nur fuer
   // das Lichtprofil, unter dem sie erhoben wurde (s. calibStorageKey()).
-  const scope=calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel();
+  const scope=(calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel())+(calibIsoLegacy?' · altes ISO-Modell – neu kalibrieren':'');
   el.textContent='×'+customCalibFactor.toFixed(4)+off+' ('+calibPoints+' Punkt'+(calibPoints>1?'e':'')+')'+scope;
 }
 function calibScopeLabel(){
@@ -1540,6 +1711,12 @@ const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert 
 function applyCalibration(){
   if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
   if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. Punkt 4 bei stepDownExposureManual
+  // v3.4.22: Profilwechsel noch nicht eingerechnet -> Rohwert gehoert zum alten Profil.
+  if(profileSwitchPending){showError('Lichtprofil wurde gerade gewechselt – einen Moment warten, bis der Messwert neu berechnet ist.');return;}
+  // v3.4.22: dasselbe Q-Gate wie die Anzeige. Bei geschlossenem Gate haelt die
+  // Anzeige den letzten brauchbaren Wert - der aktuelle Rohwert gilt als nicht
+  // repraesentativ und darf keine dauerhafte Kalibrierung begruenden.
+  if(lastQuality&&lastQuality.qGate<Q_GATE_HOLD){showError('Messgüte zu niedrig zum Kalibrieren ('+(Q_WEAKEST_LABELS[lastQuality.gateWeakest]||'Messgüte')+'). Aufbau prüfen und erneut versuchen.');return;}
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
@@ -1550,8 +1727,13 @@ function applyCalibration(){
   // einen ggf. vorhandenen zweiten Punkt.
   const pt={raw:currentRawPPFDUncalibrated,ref:refPPFD};
   let d=loadCalib2Data();
+  // v3.4.24: Punkte aus dem alten ISO-Modell nicht mit einem neuen mischen -
+  // die Gerade laege sonst zwischen zwei verschiedenen Rohwert-Skalen.
+  let isoReset=false;
+  if(d&&d.p1&&!(d.isoModel>=ISO_MODEL)){d=null;isoReset=true;}
   if(!d||!d.p1) d={p1:pt,p2:null};
   else d.p2=pt;
+  d.isoModel=ISO_MODEL;
   const c=computeCalib2(d.p1,d.p2);
   if(!c){
     showError('Kalibrierpunkte unbrauchbar: Rohwerte zu nah beieinander oder Steigung ≤ 0. Zweiten Punkt bei deutlich anderer Helligkeit messen (z.B. 100 und 1000 µmol).');
@@ -1566,9 +1748,10 @@ function applyCalibration(){
   try{localStorage.setItem(calibStorageKey(),JSON.stringify(d));}catch(e){}
   try{localStorage.removeItem(calibLegacyKey());}catch(e){}
   try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);}catch(e){} // Legacy-Faktor ersetzt
-  customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;
+  customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;calibIsoLegacy=false;
   calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c; // v3.4.10: Stuetzstellen mitziehen
   updateCalibDisplay();
+  if(isoReset) showError('Frühere Kalibrierpunkte stammten aus dem alten ISO-Modell und wurden verworfen – dies ist jetzt Punkt 1.');
   if(c.clamped){showError('Steigung außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
   if(c.points===1){
     // Modal offen lassen: direkt zur zweiten Intensität übergehen möglich.
@@ -1605,7 +1788,7 @@ function countCalibKeys(facing){
 // Kalibrierung), aber gemeldet, wenn dort noch etwas liegt - ein
 // Aufbau-Wechsel betrifft sie oft ebenso.
 function resetCalibration(){
-  customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;
+  customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;calibIsoLegacy=false;
   calibP1=null;calibP2=null;calibFit=null; // v3.4.10
   let removed=0;
   for(const k of calibKeysFor(cameraFacing)){
@@ -1672,7 +1855,7 @@ function exportTrainCSV(){
   // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
   // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
   // "Gruppe unbekannt", nicht "eigene Gruppe".
-  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -1730,7 +1913,7 @@ async function toggleCamera(){
   try{localStorage.setItem('ppfd_camera',cameraFacing);}catch(e){}
   updateCameraToggleLabel();
   loadCalib(); // v3.4.0: Zwei-Punkt/Legacy je Kamera neu laden
-  blackLevelLin=loadBlackLevel();
+  blackLevelRGB=loadBlackLevel();blackLevelLin=blackLevelY(blackLevelRGB);
   updateBlackLevelNote();
   if(isMeasuring){stopCamera();await startCamera();}
 }
@@ -1901,7 +2084,7 @@ function stopCamera(){
   currentSignalLevel='ok';lastUniformityCV=null;
   if(manualLightKey!=='AUTO'){currentFactor=LIGHT_PROFILES[manualLightKey].factor;currentLightSourceName=manualLightKey;}
   else{currentFactor=0.0185;currentLightSourceName='SUNLIGHT';}
-  lastAiUpdate=0;
+  lastAiUpdate=0;profileSwitchPending=false;
   lightDetector.unlock();
   wbManual=false;
 }
@@ -1919,6 +2102,14 @@ document.getElementById('lightSourceSelect').addEventListener('change',e=>{
   // Kalibrierung stillschweigend weiter.
   const hadCalib=customCalibFactor!==null;
   manualLightKey=e.target.value;
+  // v3.4.22 FIX: Profil SOFORT uebernehmen (manuell) bzw. im naechsten Frame neu
+  // erkennen (Auto) und das Kalibrieren sperren, bis der erste Frame mit dem
+  // neuen Faktor gerechnet wurde. Vorher wechselte der Speicherschluessel
+  // sofort, der Faktor erst im naechsten 1-Hz-Block: ein Rohwert des alten
+  // Profils landete unter dem neuen.
+  profileSwitchPending=true;
+  lastAiUpdate=0;
+  if(manualLightKey!=='AUTO'&&LIGHT_PROFILES[manualLightKey]){currentFactor=LIGHT_PROFILES[manualLightKey].factor;currentLightSourceName=manualLightKey;}
   try{localStorage.setItem(LIGHTSRC_KEY,manualLightKey);}catch(err){}
   loadCalib();
   updateCalibDisplay();
@@ -2120,7 +2311,7 @@ function processLoop(timestamp){
   try{
     ctx.drawImage(video,0,0,PROC_W,PROC_H);
     const imageData=ctx.getImageData(0,0,PROC_W,PROC_H);
-    frame=analyzeFrame(imageData.data,PROC_W,PROC_H,pixelStep,gammaLUT,blackLevelLin);
+    frame=analyzeFrame(imageData.data,PROC_W,PROC_H,pixelStep,gammaLUT,blackLevelRGB);
     canvasFailStreak=0;
   }catch(err){
     canvasFailStreak++;
@@ -2173,6 +2364,7 @@ function processLoop(timestamp){
         }else{
           exposureDriftStrikes=0;
           hardwareSettings.exposureTime=liveExpSec;
+          hardwareSettings.exposureReported=true; // v3.4.26
         }
       }
     }
@@ -2313,6 +2505,7 @@ function processLoop(timestamp){
     // Akkumulator soll also in jedem Fall genau EINEN Schritt machen.
     flickerResultFresh=true;
     lastAiUpdate=timestamp;
+    profileSwitchPending=false; // Faktor des gewaehlten Profils ist ab diesem Frame wirksam
   }
 
   const effectiveISO=hardwareSettings?.iso||ISO;
@@ -2328,7 +2521,12 @@ function processLoop(timestamp){
   lastRange=calibRangeStatus(rawPPFD,calibP1,calibP2,calibFit);
   // v3.4.0: affine Korrektur (Steigung + optionaler Offset aus Zwei-Punkt-
   // Kalibrierung); negativ geklemmt, damit ein Offset nie negative PPFD erzeugt.
-  if(customCalibFactor!==null) rawPPFD=Math.max(0,rawPPFD*customCalibFactor+calibOffset);
+  if(customCalibFactor!==null){
+    // v3.4.22: Unsicherheit durch die affine Kalibrierung fortpflanzen
+    // (negativer Offset verstaerkt die relative Unsicherheit nahe der Null-Zone).
+    if(lastUncertainty) lastUncertainty=propagateAffineUncertainty(lastUncertainty,currentRawPPFDUncalibrated,customCalibFactor,calibOffset);
+    rawPPFD=Math.max(0,rawPPFD*customCalibFactor+calibOffset);
+  }
   currentRawPPFD=rawPPFD;
   lastFrameSnapshot={
     avgR_gamma:avgR_gamma,avgG_gamma:avgG_gamma,avgB_gamma:avgB_gamma,
@@ -2360,6 +2558,7 @@ function processLoop(timestamp){
     calibSpanLo:lastRange?lastRange.lo:null,
     calibSpanHi:lastRange?lastRange.hi:null,
     calibProfil:customCalibFactor===null?null:manualLightKey,
+    calibIsoModell:customCalibFactor===null?null:(calibIsoLegacy?1:ISO_MODEL),
     calibGeltung:customCalibFactor===null?null:(calibLegacyScope?'profilunabhaengig':'profilspezifisch'),
     signalLevel:signalStatus.level,
     lichtquelleModus:manualLightKey!=='AUTO'?'manuell':'auto',
@@ -2391,7 +2590,11 @@ function processLoop(timestamp){
   const medianPPFD=ppfdMedian.push(rawPPFD);
   // v3.4.21: Software-Fallback ohne gemeldete Belichtung -> Formel rechnet mit
   // einem geratenen Wert (s. readLiveExposure).
-  const exposureGuessed=!!hardwareSettings&&!hardwareSettings.constraintsApplied&&!hardwareSettings.exposureReported;
+  // v3.4.22: auch ISO beruecksichtigen (isoReported wurde erfasst, aber nie
+  // ausgewertet) - die Formel teilt durch ISO*Belichtungszeit.
+  // v3.4.26 FIX: gilt in JEDEM Modus. Vorher war der Manuell-Modus pauschal
+  // ausgenommen, obwohl auch dort ein Geraet Belichtung/ISO nicht melden kann.
+  const exposureGuessed=!!hardwareSettings&&!(hardwareSettings.exposureReported&&hardwareSettings.isoReported);
   const qGateOpen=!lastQuality||lastQuality.qGate>=Q_GATE_HOLD;
   // v3.4.14: Waehrend stepDownExposureManual() umstellt, kommen Frames mit
   // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese
@@ -2418,14 +2621,16 @@ function processLoop(timestamp){
     // Referenzmessungen geprueft. Dasselbe gilt fuer "jeder dritte Messwert"
     // oben: auch die 68 % bei k=1 sind unter dieser Annahme gerechnet.
     // Pruefbar ist es erst mit gepoolten CSV-Daten (README, Unsicherheitsbudget).
-    const uExp=lastUncertainty.uRel*2;
+    const uQuantifiable=lastUncertainty.uRel!==null&&Number.isFinite(lastUncertainty.uRel);
+    const uExp=uQuantifiable?lastUncertainty.uRel*2:null;
     // v3.4.10: Geltungsbereich der Kalibrierung mit anzeigen. Bewusst in
     // dieser Zeile - sie beantwortet die Frage "wie sehr kann ich der Zahl
     // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
-    document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)'
+    document.getElementById('uncertaintyVal').textContent=(uQuantifiable?'Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)':'Unsicherheit nicht zuverlässig quantifizierbar (nahe Kalibrier-Nullpunkt)')
       +(customCalibFactor===null?' · unkalibriert':'')
+      +(calibIsoLegacy&&customCalibFactor!==null?' · Kalibrierung mit altem ISO-Modell':'')
       +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
-      +(exposureGuessed?' · Belichtung nicht gemeldet':'');
+      +(exposureGuessed?' · Belichtung/ISO nicht gemeldet':'');
     setCalibRangeLine(calibRangeSuffix(lastRange));
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';

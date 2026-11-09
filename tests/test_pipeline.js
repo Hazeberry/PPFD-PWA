@@ -22,7 +22,8 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   Q_STAB_FULL, Q_STAB_ZERO, SIGNAL_FULL_LIN, computeUncertainty,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
-  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason };`)();
+  RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -619,7 +620,7 @@ t('Verdrahtung: Software-Poll nutzt readLiveExposure und den schnelleren Takt', 
   const n = Number(html.match(/const SW_POLL_INTERVAL=(\d+)/)[1]);
   assert.ok(n >= 5 && n <= 30, 'SW_POLL_INTERVAL=' + n + ' (bei 60 fps ~' + (n / 60 * 1000).toFixed(0) + ' ms)');
   assert.ok(/exposureReported:false,isoReported:false/.test(html), 'Startzustand ist nicht "nicht gemeldet"');
-  assert.ok(/\+\(exposureGuessed\?' · Belichtung nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
+  assert.ok(/\+\(exposureGuessed\?' · Belichtung\/ISO nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
 });
 
 console.log('== Kalman-Reset beim Moduswechsel (v3.4.6) ==');
@@ -1155,6 +1156,229 @@ t('Dokumentierte Einzelschwellen des Gates stimmen mit den Rampen ueberein', () 
   assert.ok(Math.abs(nur({ temporalCV: 0.158 }) - P.Q_GATE_HOLD) < 0.02, 'tCV 15.8% ~ Gate');
   assert.ok(Math.abs(nur({ uniformityCV: 0.136 }) - 0.85) < 0.02, 'CV 13.6% ~ 0.85');
   assert.ok(Math.abs(nur({ temporalCV: 0.076 }) - 0.85) < 0.02, 'tCV 7.6% ~ 0.85');
+});
+
+console.log('== v3.4.22: kanalweiser Schwarzwert, stetiger ISO-Faktor, affine Unsicherheit ==');
+t('Kanalweiser Schwarzwert: Dunkelframe RGB 10/20/30 ergibt nach eigener Korrektur exakt 0', () => {
+  const d = makeFrame(() => [10, 20, 30]);
+  const bl = { r: LUT[10], g: LUT[20], b: LUT[30] };
+  const f = P.analyzeFrame(d, W, H, 4, LUT, bl);
+  assert.strictEqual(f.avgR_lin, 0); assert.strictEqual(f.avgG_lin, 0); assert.strictEqual(f.avgB_lin, 0);
+  assert.strictEqual(f.yMean_lin, 0);
+});
+t('Skalarer Schwarzwert verhaelt sich wie {r,g,b} gleich (Rueckwaertskompatibilitaet)', () => {
+  const a = P.analyzeFrame(uniform(128), W, H, 4, LUT, 0.03);
+  const b = P.analyzeFrame(uniform(128), W, H, 4, LUT, { r: 0.03, g: 0.03, b: 0.03 });
+  approx(a.yMean_lin, b.yMean_lin, 1e-12); approx(a.avgB_lin, b.avgB_lin, 1e-12);
+});
+t('normalizeBlackLevel: ungueltige/negative Werte -> 0', () => {
+  assert.deepStrictEqual(P.normalizeBlackLevel(NaN), { r: 0, g: 0, b: 0 });
+  assert.deepStrictEqual(P.normalizeBlackLevel({ r: -1, g: 0.1, b: undefined }), { r: 0, g: 0.1, b: 0 });
+  assert.deepStrictEqual(P.normalizeBlackLevel(null), { r: 0, g: 0, b: 0 });
+});
+t('ISO-Faktor: Stuetzwerte 1.00/0.95/0.88 und stetig (kein Sprung bei 400->401, 800->801)', () => {
+  approx(P.isoCalibFactor(100), 1, 1e-12); approx(P.isoCalibFactor(400), 1, 1e-12);
+  approx(P.isoCalibFactor(800), 0.95, 1e-12); approx(P.isoCalibFactor(1600), 0.88, 1e-12);
+  approx(P.isoCalibFactor(6400), 0.88, 1e-12);
+  assert.ok(Math.abs(P.isoCalibFactor(401) - P.isoCalibFactor(400)) < 1e-3, 'Sprung bei 400');
+  assert.ok(Math.abs(P.isoCalibFactor(801) - P.isoCalibFactor(800)) < 1e-3, 'Sprung bei 800');
+  assert.strictEqual(P.isoCalibFactor(0), 1); assert.strictEqual(P.isoCalibFactor(NaN), 1);
+});
+t('ISO-Faktor monoton fallend ueber den gesamten Bereich', () => {
+  let prev = P.isoCalibFactor(50);
+  for (let iso = 51; iso <= 3200; iso++) { const v = P.isoCalibFactor(iso); assert.ok(v <= prev + 1e-12, 'ISO ' + iso); prev = v; }
+});
+t('Affiner Unsicherheits-Faktor: ohne Offset 1, negativer Offset >1, ungekappt', () => {
+  assert.strictEqual(P.affineUncertaintyGain(100, 1, 0), 1);
+  assert.strictEqual(P.affineUncertaintyGain(100, 1, 5), 1, 'positiver Offset darf nicht entlasten');
+  approx(P.affineUncertaintyGain(100, 1, -50), 2, 1e-12);
+  approx(P.affineUncertaintyGain(100.01, 1, -100), 10001, 1e-6, 'rechnerischer Faktor wird nicht gekappt');
+  assert.strictEqual(P.affineUncertaintyGain(40, 1, -50), Infinity, 'Null-Zone');
+});
+t('Nahe der Nullstelle: nicht quantifizierbar statt zu kleiner Zahl', () => {
+  const u = P.computeUncertainty({ calibrated: true, profileU: 0.05, autoMode: false, temporalCV: 0.01, yMeanLin: 0.2 });
+  const near = P.propagateAffineUncertainty(u, 100.01, 1, -100);
+  assert.strictEqual(near.unquantifiable, true);
+  assert.strictEqual(near.uRel, null);
+  const zero = P.propagateAffineUncertainty(u, 40, 1, -50);
+  assert.strictEqual(zero.unquantifiable, true);
+  const ok = P.propagateAffineUncertainty(u, 100, 1, -50); // Faktor 2 <= Limit
+  assert.strictEqual(ok.unquantifiable, false);
+  approx(ok.uRel, u.uRel * 2, 1e-12);
+  // Grenze: Faktor genau Limit ist noch quantifizierbar, knapp darueber nicht
+  const lim = P.AFFINE_GAIN_LIMIT; // lin/res = lim  =>  offset = -lin*(1-1/lim)
+  assert.strictEqual(P.propagateAffineUncertainty(u, 100, 1, -100 * (1 - 1 / lim)).unquantifiable, false);
+  assert.strictEqual(P.propagateAffineUncertainty(u, 100, 1, -100 * (1 - 1 / (lim * 1.01))).unquantifiable, true);
+});
+t('propagateAffineUncertainty skaliert uRel/uSys/uRand, Eingabe bleibt unveraendert', () => {
+  const u = P.computeUncertainty({ calibrated: true, profileU: 0.05, autoMode: false, temporalCV: 0.01, yMeanLin: 0.2 });
+  const before = JSON.stringify(u);
+  const p = P.propagateAffineUncertainty(u, 100, 1, -50);
+  approx(p.uRel, u.uRel * 2, 1e-12); approx(p.uSys, u.uSys * 2, 1e-12); approx(p.uRand, u.uRand * 2, 1e-12);
+  assert.strictEqual(JSON.stringify(u), before, 'Eingabeobjekt mutiert');
+  assert.strictEqual(P.propagateAffineUncertainty(u, 100, 1, 0).uRel, u.uRel);
+});
+t('Integration: Anzeige-Pipeline nutzt kanalweisen Schwarzwert und Fortpflanzung', () => {
+  assert.ok(/gammaLUT,blackLevelRGB\)/.test(html), 'analyzeFrame bekommt nicht den kanalweisen Schwarzwert');
+  assert.ok(/propagateAffineUncertainty\(lastUncertainty,currentRawPPFDUncalibrated,customCalibFactor,calibOffset\)/.test(html), 'Fortpflanzung nicht verdrahtet');
+  assert.ok(/1284\*isoCalibFactor\(iso\)/.test(html), 'stetiger ISO-Faktor nicht verdrahtet');
+  assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(html), 'isoReported wird nicht ausgewertet');
+});
+
+console.log('== v3.4.22: Nachweis manuelle Belichtung, Initialisierungsreihenfolge, Kalibrier-Gates ==');
+t('rampReactionObserved: Kamera ignoriert alles -> kein Nachweis', () => {
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 100 }, 100), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: -1, liveBefore: 100 }, 100), false);
+});
+t('rampReactionObserved: Helligkeit allein belegt nichts (Szene wird heller, Zeit bleibt)', () => {
+  // zweites Argument ist die gemeldete Belichtungszeit; Y wird nicht mehr uebergeben
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 100, yBefore: 20 }, 100, 60), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: -1, liveBefore: 100, yBefore: 240 }, 100, 180), false);
+});
+t('rampReactionObserved: richtungskonsistente gemeldete Belichtungszeit zaehlt', () => {
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 100 }, 400), true);
+  assert.strictEqual(P.rampReactionObserved({ dir: -1, liveBefore: 400 }, 100), true);
+});
+t('rampReactionObserved: gegenlaeufig / fehlende Daten / ungueltig -> kein Nachweis', () => {
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 400 }, 100), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: undefined }, undefined), false);
+  assert.strictEqual(P.rampReactionObserved(null, 100), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: 0, liveBefore: 1 }, 5), false);
+});
+t('Verdrahtung: Rampennachweis statt trail.length>1', () => {
+  assert.ok(!/exposureTuneRampVerified=tuned\.trail\.length>1/.test(html), 'alte Zaehl-Logik noch da');
+  assert.ok(/exposureTuneRampVerified=!!\(tuned\.rampEvidence\|\|tuned\.hasVerify\)/.test(html));
+  assert.ok(/rampReactionObserved\(pendingStep,/.test(html), 'tuneExposure wertet die Reaktion nicht aus');
+});
+t('Schwarzwert-Schluessel stehen VOR dem ersten loadBlackLevel()-Aufruf (TDZ)', () => {
+  const first = html.search(/^blackLevelRGB=loadBlackLevel\(\)|^let blackLevelLin=/m);
+  assert.ok(first > 0, 'Startaufruf nicht gefunden');
+  const k1 = html.indexOf("const BLACKLEVEL_KEY="), k2 = html.indexOf("const BLACKLEVEL_RGB_KEY=");
+  assert.ok(k1 > 0 && k1 < first, 'BLACKLEVEL_KEY nach dem ersten Aufruf');
+  assert.ok(k2 > 0 && k2 < first, 'BLACKLEVEL_RGB_KEY nach dem ersten Aufruf');
+  assert.strictEqual(html.split("const BLACKLEVEL_KEY=").length, 2, 'doppelt deklariert');
+});
+t('Schwarzwert: gespeicherter Wert wird beim Seitenstart wirklich gelesen (Laufzeit-Test)', () => {
+  // Skript-Ausschnitt von den Schluesseln bis einschliesslich Startaufruf ausfuehren,
+  // mit echter Reihenfolge aus index.html - ein ReferenceError wuerde still auf 0 fallen.
+  const a = html.indexOf("const BLACKLEVEL_KEY=");
+  const b = html.indexOf("function blackLevelY");
+  const c = html.indexOf("function loadBlackLevel");
+  const d = html.indexOf("async function measureBlackLevel");
+  const e = html.indexOf("let blackLevelLin=0,blackLevelRGB");
+  const f = html.indexOf("\n", html.indexOf("blackLevelRGB=loadBlackLevel();blackLevelLin=blackLevelY(blackLevelRGB);"));
+  assert.ok([a, b, c, d, e, f].every(x => x > 0));
+  const store = { 'ppfd_blackLevelRGB_v1_user': JSON.stringify({ r: 0.01, g: 0.02, b: 0.03 }) };
+  const run = new Function('Y_R', 'Y_G', 'Y_B', 'localStorage', `"use strict";
+    let cameraFacing='user';
+    ${html.slice(a, html.indexOf("\n", html.indexOf("const BLACKLEVEL_RGB_KEY=")))}
+    ${html.slice(b, d)}
+    ${html.slice(e, f)}
+    return {blackLevelRGB,blackLevelLin};`);
+  const r = run(P.Y_R, P.Y_G, P.Y_B, { getItem: k => store[k] ?? null });
+  assert.deepStrictEqual(r.blackLevelRGB, { r: 0.01, g: 0.02, b: 0.03 });
+  assert.ok(r.blackLevelLin > 0);
+});
+t('Kalibrieren: Q-Gate und Profilwechsel-Sperre vor dem Speichern', () => {
+  const i = html.indexOf('function applyCalibration()');
+  const j = html.indexOf('localStorage.setItem(calibStorageKey()', i);
+  const body = html.slice(i, j);
+  assert.ok(/profileSwitchPending\)\{showError/.test(body), 'Profilwechsel-Sperre fehlt');
+  assert.ok(/lastQuality&&lastQuality\.qGate<Q_GATE_HOLD\)\{showError/.test(body), 'Q-Gate fehlt');
+});
+t('Profilwechsel: Faktor sofort uebernommen, Sperre bis zum Frame mit neuem Profil', () => {
+  const i = html.indexOf("getElementById('lightSourceSelect').addEventListener('change'");
+  const h = html.slice(i, i + 1800);
+  assert.ok(/profileSwitchPending=true/.test(h) && /lastAiUpdate=0/.test(h));
+  assert.ok(/currentFactor=LIGHT_PROFILES\[manualLightKey\]\.factor/.test(h), 'Faktor nicht sofort gesetzt');
+  assert.ok(/lastAiUpdate=timestamp;\s*profileSwitchPending=false/.test(html), 'Sperre wird nicht im Profil-Block geloest');
+});
+
+console.log('== v3.4.24: ISO-Modell der Kalibrierung ==');
+t('Neue Kalibrierung traegt isoModel, alte wird erkannt und nicht mit neuer gemischt', () => {
+  assert.ok(/const ISO_MODEL=2;/.test(html));
+  assert.ok(/calibIsoLegacy=!\(d\.isoModel>=ISO_MODEL\)/.test(html), 'Laden erkennt Altbestand nicht');
+  assert.ok(/calibIsoLegacy=!\(legacy\.isoModel>=ISO_MODEL\)/.test(html));
+  assert.ok(/calibLegacyScope=true;calibIsoLegacy=true;/.test(html), 'ganz alter Faktor nicht markiert');
+  const i = html.indexOf('function applyCalibration()'), j = html.indexOf('localStorage.setItem(calibStorageKey()', i);
+  const body = html.slice(i, j);
+  assert.ok(/!\(d\.isoModel>=ISO_MODEL\)\)\{d=null;isoReset=true;\}/.test(body), 'alte Punkte werden nicht verworfen');
+  assert.ok(/d\.isoModel=ISO_MODEL/.test(body), 'isoModel wird nicht gespeichert');
+});
+t('Altkalibrierung ist sichtbar: Anzeige, Unsicherheitszeile, Export', () => {
+  assert.ok(/altes ISO-Modell – neu kalibrieren/.test(html));
+  assert.ok(/Kalibrierung mit altem ISO-Modell/.test(html));
+  assert.ok(/calibIsoModell:/.test(html) && /'calibGeltung','calibIsoModell'/.test(html));
+  assert.ok(/nicht zuverlässig quantifizierbar/.test(html), 'Anzeige fuer unquantifizierbare Unsicherheit fehlt');
+});
+
+console.log('== v3.4.25: Verify-Nachweis, Rohwert 0 in der Null-Zone ==');
+t('Regression: Verify - Kamera ignoriert alles, nur das Licht wechselt (150 -> 100) -> kein Nachweis', () => {
+  // base=100, Test x2; gemeldete Zeit bleibt 100 bei Test und Rueckstellung
+  assert.strictEqual(P.verifyReactionObserved(100, 200, 100, 100), false);
+  assert.strictEqual(P.verifyReactionObserved(100, 50, 100, 100), false);
+});
+t('Verify: richtungskonsistente gemeldete Belichtungszeit zaehlt (auch A17-Quantisierung 99.98 -> ~200)', () => {
+  assert.strictEqual(P.verifyReactionObserved(99.98, 199.96, 200, 100), true);
+  assert.strictEqual(P.verifyReactionObserved(400, 200, 200, 400), true);
+});
+t('Verify: gegenlaeufig / zu klein / fehlende Daten -> kein Nachweis', () => {
+  assert.strictEqual(P.verifyReactionObserved(100, 200, 100, 200), false, 'gegenlaeufig');
+  assert.strictEqual(P.verifyReactionObserved(100, 200, 110, 100), false, 'unter 20 %');
+  assert.strictEqual(P.verifyReactionObserved(100, 200, undefined, 100), false);
+  assert.strictEqual(P.verifyReactionObserved(0, 200, 200, 100), false);
+  assert.strictEqual(P.verifyReactionObserved(100, 100, 200, 100), false, 'keine Stoerung');
+});
+t('Verdrahtung: Verify-Trail nur bei Settings-Beleg, Helligkeit allein nie', () => {
+  assert.ok(!/if\(yMoved\|\|settingsMoved\)/.test(html), 'alte Oder-Bedingung noch da');
+  assert.ok(/const settingsMoved=verifyReactionObserved\(base,testReq,liveTest,liveBack\);\s*if\(settingsMoved\)\{/.test(html));
+});
+t('Regression: Rohwert exakt 0, Steigung 1, Offset -100 -> nicht quantifizierbar', () => {
+  assert.strictEqual(P.affineUncertaintyGain(0, 1, -100), Infinity);
+  const u = P.computeUncertainty({ calibrated: true, profileU: 0.05, autoMode: false, temporalCV: 0, yMeanLin: 0 });
+  const r = P.propagateAffineUncertainty(u, 0, 1, -100);
+  assert.strictEqual(r.unquantifiable, true);
+  assert.strictEqual(r.uRel, null);
+});
+t('Rohwert 0: positiver/kein Offset bleibt neutral, ungueltige Eingaben ebenso', () => {
+  assert.strictEqual(P.affineUncertaintyGain(0, 1, 50), 1);
+  assert.strictEqual(P.affineUncertaintyGain(0, 1, 0), 1);
+  assert.strictEqual(P.affineUncertaintyGain(NaN, 1, -100), 1);
+  assert.strictEqual(P.affineUncertaintyGain(-5, 1, -100), Infinity, 'negativer Rohwert wie 0');
+  assert.strictEqual(P.affineUncertaintyGain(0, 0, -100), 1, 'ungueltige Steigung');
+});
+
+console.log('== v3.4.26: Manuell-Beleg und Hinweis "Belichtung/ISO nicht gemeldet" ==');
+t('Regression: Geraet meldet weder Modus noch Belichtungszeit -> KEIN Manuell-Beleg', () => {
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: undefined, liveExp: undefined, requestedExp: 40, rampVerified: false }), false);
+});
+t('confirmManualExposure: gemeldeter Modus, Treffer der Zeit oder beobachtete Reaktion belegen', () => {
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'manual' }), true);
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: undefined, liveExp: 41, requestedExp: 40 }), true);
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'continuous', liveExp: 100, requestedExp: 40, rampVerified: true }), true);
+  assert.strictEqual(P.confirmManualExposure({ attempted: false }), true, 'nichts angefordert -> nichts zu belegen');
+});
+t('confirmManualExposure: continuous + abweichende Zeit + keine Reaktion -> kein Beleg', () => {
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'continuous', liveExp: 100, requestedExp: 40, rampVerified: false }), false);
+});
+t('Hinweis gilt auch im Manuell-Modus (kein pauschaler Ausschluss ueber constraintsApplied)', () => {
+  const m = html.match(/const exposureGuessed=([^;]*);/);
+  assert.ok(m, 'exposureGuessed nicht gefunden');
+  assert.ok(!/constraintsApplied/.test(m[1]), 'Manuell-Modus weiterhin ausgenommen: ' + m[1]);
+  assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(m[1]));
+});
+t('Manuell-Pfad setzt die Meldungs-Flags und schaetzt mit dem ANGEFORDERTEN Wert', () => {
+  const i = html.indexOf('async function applyHardwareConstraints'), j = html.indexOf('function loadCalibFactor', i);
+  const f = html.slice(i, j);
+  assert.ok(/Object\.assign\(result,readLiveExposure\(ns,reqEstimate,EXP_UNIT\)\)/.test(f), 'Flags im Manuell-Pfad nicht gesetzt');
+  assert.ok(/exposureTime:Number\.isFinite\(constraints\.exposureTime\)\?constraints\.exposureTime\*EXP_UNIT/.test(f), 'Schaetzung nicht aus dem angeforderten Wert');
+  assert.ok(!/!ns\.exposureMode\s*\|\|/.test(f), 'trivialer Beleg "!ns.exposureMode" noch da');
+  assert.ok(/confirmManualExposure\(\{/.test(f));
+});
+t('readLiveExposure mit Anforderungs-Schaetzung: keine Meldung -> angeforderter Wert, Flags false', () => {
+  const r = P.readLiveExposure({}, { exposureTime: 40e-4, iso: 100 }, 1e-4);
+  approx(r.exposureTime, 40e-4, 1e-12); assert.strictEqual(r.iso, 100);
+  assert.strictEqual(r.exposureReported, false); assert.strictEqual(r.isoReported, false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
