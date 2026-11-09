@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.22</title>
+<title>PPFD Meter Pro v3.4.23</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.22</span>
+  <span class="app-title">PPFD Meter Pro v3.4.23</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.22 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.23 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -219,6 +219,7 @@
     Einschwingen statt „Aufwärmen“ (keine Temperatur-Korrektur) · Kalibrieren erst nach dem Einschwingen<br>
     Gehaltener Wert abgedunkelt mit Abzeichen · „Belichtung/ISO nicht gemeldet“ im Software-Fallback · Service Worker räumt nur eigene Caches<br>
     Kanalweiser Schwarzwert · Stetiger ISO-Faktor · Unsicherheit durch affine Kalibrierung fortgepflanzt<br>
+    Schwarzwert beim Start geladen · Manuell-Nachweis nur durch beobachtete Reaktion · Kalibrieren gesperrt bei Profilwechsel und geschlossenem Q-Gate<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -873,6 +874,23 @@ function heldReason(o){
   if(!o.qGateOpen) return{kind:'gate',weakest:o.gateWeakest};
   return null;
 }
+// v3.4.22: Hat die Kamera auf einen Rampen-Schritt BEOBACHTBAR reagiert?
+// Vorher galt trail.length>1 (= mehrere Stellversuche) als Nachweis der
+// manuellen Kontrolle. Das belegt nur, dass die App es versucht hat: eine
+// Kamera, die alle Anforderungen ignoriert und ausdruecklich 'continuous'
+// meldet, wurde trotzdem als "Manuell" akzeptiert.
+// step={dir:+1|-1 (Belichtung laenger/kuerzer), liveBefore, yBefore}.
+// Beleg = gemeldete Belichtungszeit bewegt sich richtungskonsistent (>20 %)
+// ODER die Bildhelligkeit aendert sich richtungskonsistent (>5 Stufen).
+function rampReactionObserved(step,liveNow,yNow){
+  if(!step||!(step.dir===1||step.dir===-1)) return false;
+  const lb=step.liveBefore;
+  const settingsMoved=Number.isFinite(lb)&&Number.isFinite(liveNow)&&
+    Math.abs(liveNow-lb)>Math.max(2,0.2*lb)&&((liveNow>lb)===(step.dir>0));
+  const yMoved=Number.isFinite(step.yBefore)&&Number.isFinite(yNow)&&
+    Math.abs(yNow-step.yBefore)>5&&((yNow>step.yBefore)===(step.dir>0));
+  return settingsMoved||yMoved;
+}
 /* ===PURE-PIPELINE-END=== */
 
 class SoftwareGainController {
@@ -911,6 +929,9 @@ const appFSM=new AppStatusStateMachine();
 let isMeasuring=false,currentFactor=0.0185,currentLightSourceName='SUNLIGHT';
 let isStarting=false;
 let lastAiUpdate=0,hardwareSettings=null,useSoftwareGain=false;
+// v3.4.22: nach einem Lichtprofil-Wechsel ist currentRawPPFDUncalibrated bis zum
+// ersten Frame mit dem NEUEN Profil noch mit dem alten Faktor gerechnet.
+let profileSwitchPending=false;
 let wbManual=false;
 let customCalibFactor=null,activeStream=null,currentRawPPFD=0,currentRawPPFDUncalibrated=0,frameCount=0,animationFrameId=null;
 let blackFrameCount=0,blackFrameStage=0;
@@ -997,6 +1018,14 @@ let canvasFailStreak=0;
 const CANVAS_FAIL_LIMIT=30;
 const CLIP_ESCALATE_FRAMES=90;
 const CALIB_KEY='ppfd_calibFactor_v2';
+// v3.4.22 FIX: Die Schwarzwert-Schluessel muessen VOR dem ersten
+// loadBlackLevel()-Aufruf (unten, beim Seitenstart) initialisiert sein. Vorher
+// standen sie weiter hinten: der Aufruf lief in die Temporal Dead Zone, der
+// ReferenceError wurde vom try/catch verschluckt und der gespeicherte Wert
+// stillschweigend auf 0 gesetzt (erst ein spaeteres Laden, z.B. beim
+// Kamerawechsel, las ihn korrekt).
+const BLACKLEVEL_KEY='ppfd_blackLevel_v1';
+const BLACKLEVEL_RGB_KEY='ppfd_blackLevelRGB_v1';
 // v3.4.0: Zwei-Punkt-Kalibrierung. Neuer Storage (JSON {p1,p2} pro Kamera);
 // der Legacy-Faktor (CALIB_KEY) bleibt als reine Steigung lesbar und wird
 // beim ersten Speichern eines neuen Punktes ersetzt. customCalibFactor
@@ -1253,10 +1282,8 @@ async function sampleFrameYPwm(){
 const VERIFY_SETTLE_MS=500;
 const VERIFY_COST_MS=2*VERIFY_SETTLE_MS+2*(PWM_SAMPLE_EXTRA*PWM_SAMPLE_GAP_MS)+120;
 
-const BLACKLEVEL_KEY='ppfd_blackLevel_v1';
 // v3.4.22: kanalweise Referenz. Neuer Key (JSON {r,g,b}); der alte Skalar-Key
 // bleibt als Fallback lesbar (alle Kanaele gleich = bisheriges Verhalten).
-const BLACKLEVEL_RGB_KEY='ppfd_blackLevelRGB_v1';
 function blackLevelY(bk){return Y_R*bk.r+Y_G*bk.g+Y_B*bk.b;}
 function loadBlackLevel(){
   const zero={r:0,g:0,b:0};
@@ -1387,18 +1414,26 @@ async function tuneExposure(track,cap,startReq){
   let req=startReq,trail=[startReq],y=0;
   const capMin=cap.exposureTime?.min??startReq,capMax=cap.exposureTime?.max??startReq;
   let prevY=sampleFrameY();
+  // v3.4.22: beobachtete Reaktion auf die Rampen-Schritte (s. rampReactionObserved).
+  let rampEvidence=false,pendingStep=null;
   for(let iter=0;iter<6;iter++){
     if(performance.now()>deadline) break;
     await new Promise(r=>setTimeout(r,500));
     y=sampleFrameY();
     let stall=0;
     while(Math.abs(y-prevY)<2&&stall<5&&performance.now()<deadline){await new Promise(r=>setTimeout(r,200));y=sampleFrameY();stall++;}
+    if(pendingStep){
+      if(rampReactionObserved(pendingStep,track.getSettings().exposureTime,y)) rampEvidence=true;
+      pendingStep=null;
+    }
     prevY=y;
     if(y<25&&req<capMax){
+      pendingStep={dir:1,liveBefore:track.getSettings().exposureTime,yBefore:y};
       req=Math.min(req*4,capMax);
       try{await track.applyConstraints({advanced:[{exposureTime:req}]});}catch(e){break;}
       trail.push(req);
     }else if(y>220&&req>capMin){
+      pendingStep={dir:-1,liveBefore:track.getSettings().exposureTime,yBefore:y};
       req=Math.max(req/4,capMin);
       try{await track.applyConstraints({advanced:[{exposureTime:req}]});}catch(e){break;}
       trail.push(req);
@@ -1477,7 +1512,7 @@ async function tuneExposure(track,cap,startReq){
   // hinterlassen, während die App später "Manuell" meldete.
   const hasVerify=trail.some(t=>typeof t==='string'&&t.includes('(verify'));
   if(!targetBandMet&&!hasVerify){try{await track.applyConstraints({advanced:[{exposureMode:'continuous'}]});}catch(e){}}
-  return {req,trail,finalY:y,targetBandMet,hasVerify};
+  return {req,trail,finalY:y,targetBandMet,hasVerify,rampEvidence};
 }
 
 async function applyHardwareConstraints(stream){
@@ -1514,7 +1549,9 @@ async function applyHardwareConstraints(stream){
         constraints.exposureTime=tuned.req;
         result.exposureTuneTrail=tuned.trail.join('→');
         result.exposureTuneY=tuned.finalY;
-        result.exposureTuneRampVerified=tuned.trail.length>1;
+        // v3.4.22 FIX: Nachweis = beobachtete Reaktion (Rampe) oder bestandener
+        // Verify-Schritt - nicht die blosse Zahl der Stellversuche.
+        result.exposureTuneRampVerified=!!(tuned.rampEvidence||tuned.hasVerify);
         // v3.3.15 FIX (Tin): War der Verify erfolgreich (hasVerify), ist der
         // Manual-Lock bewiesen - ein Bandverfehlen des End-Y darf den Pfad
         // dann nicht mehr abbrechen (tuneExposure hat in dem Fall auch nicht
@@ -1614,6 +1651,12 @@ const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert 
 function applyCalibration(){
   if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
   if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. Punkt 4 bei stepDownExposureManual
+  // v3.4.22: Profilwechsel noch nicht eingerechnet -> Rohwert gehoert zum alten Profil.
+  if(profileSwitchPending){showError('Lichtprofil wurde gerade gewechselt – einen Moment warten, bis der Messwert neu berechnet ist.');return;}
+  // v3.4.22: dasselbe Q-Gate wie die Anzeige. Bei geschlossenem Gate haelt die
+  // Anzeige den letzten brauchbaren Wert - der aktuelle Rohwert gilt als nicht
+  // repraesentativ und darf keine dauerhafte Kalibrierung begruenden.
+  if(lastQuality&&lastQuality.qGate<Q_GATE_HOLD){showError('Messgüte zu niedrig zum Kalibrieren ('+(Q_WEAKEST_LABELS[lastQuality.gateWeakest]||'Messgüte')+'). Aufbau prüfen und erneut versuchen.');return;}
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
@@ -1975,7 +2018,7 @@ function stopCamera(){
   currentSignalLevel='ok';lastUniformityCV=null;
   if(manualLightKey!=='AUTO'){currentFactor=LIGHT_PROFILES[manualLightKey].factor;currentLightSourceName=manualLightKey;}
   else{currentFactor=0.0185;currentLightSourceName='SUNLIGHT';}
-  lastAiUpdate=0;
+  lastAiUpdate=0;profileSwitchPending=false;
   lightDetector.unlock();
   wbManual=false;
 }
@@ -1993,6 +2036,14 @@ document.getElementById('lightSourceSelect').addEventListener('change',e=>{
   // Kalibrierung stillschweigend weiter.
   const hadCalib=customCalibFactor!==null;
   manualLightKey=e.target.value;
+  // v3.4.22 FIX: Profil SOFORT uebernehmen (manuell) bzw. im naechsten Frame neu
+  // erkennen (Auto) und das Kalibrieren sperren, bis der erste Frame mit dem
+  // neuen Faktor gerechnet wurde. Vorher wechselte der Speicherschluessel
+  // sofort, der Faktor erst im naechsten 1-Hz-Block: ein Rohwert des alten
+  // Profils landete unter dem neuen.
+  profileSwitchPending=true;
+  lastAiUpdate=0;
+  if(manualLightKey!=='AUTO'&&LIGHT_PROFILES[manualLightKey]){currentFactor=LIGHT_PROFILES[manualLightKey].factor;currentLightSourceName=manualLightKey;}
   try{localStorage.setItem(LIGHTSRC_KEY,manualLightKey);}catch(err){}
   loadCalib();
   updateCalibDisplay();
@@ -2387,6 +2438,7 @@ function processLoop(timestamp){
     // Akkumulator soll also in jedem Fall genau EINEN Schritt machen.
     flickerResultFresh=true;
     lastAiUpdate=timestamp;
+    profileSwitchPending=false; // Faktor des gewaehlten Profils ist ab diesem Frame wirksam
   }
 
   const effectiveISO=hardwareSettings?.iso||ISO;

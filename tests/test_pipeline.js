@@ -23,7 +23,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
   RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
-  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_MAX };`)();
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_MAX, rampReactionObserved };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -1209,6 +1209,72 @@ t('Integration: Anzeige-Pipeline nutzt kanalweisen Schwarzwert und Fortpflanzung
   assert.ok(/propagateAffineUncertainty\(lastUncertainty,currentRawPPFDUncalibrated,customCalibFactor,calibOffset\)/.test(html), 'Fortpflanzung nicht verdrahtet');
   assert.ok(/1284\*isoCalibFactor\(iso\)/.test(html), 'stetiger ISO-Faktor nicht verdrahtet');
   assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(html), 'isoReported wird nicht ausgewertet');
+});
+
+console.log('== v3.4.22: Nachweis manuelle Belichtung, Initialisierungsreihenfolge, Kalibrier-Gates ==');
+t('rampReactionObserved: Kamera ignoriert alles (live/Y unveraendert) -> kein Nachweis', () => {
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 100, yBefore: 20 }, 100, 20.5), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: -1, liveBefore: 100, yBefore: 240 }, 100, 241), false);
+});
+t('rampReactionObserved: richtungskonsistente Belichtung ODER Helligkeit zaehlt', () => {
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 100, yBefore: 20 }, 400, 20), true);
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 100, yBefore: 20 }, 100, 60), true);
+  assert.strictEqual(P.rampReactionObserved({ dir: -1, liveBefore: 400, yBefore: 240 }, 100, 240), true);
+  assert.strictEqual(P.rampReactionObserved({ dir: -1, liveBefore: 100, yBefore: 240 }, 100, 180), true);
+});
+t('rampReactionObserved: gegenlaeufige Aenderung / fehlende Daten -> kein Nachweis', () => {
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: 400, yBefore: 20 }, 100, 5), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: 1, liveBefore: undefined, yBefore: 20 }, undefined, 20), false);
+  assert.strictEqual(P.rampReactionObserved(null, 100, 20), false);
+  assert.strictEqual(P.rampReactionObserved({ dir: 0, liveBefore: 1, yBefore: 1 }, 5, 50), false);
+});
+t('Verdrahtung: Rampennachweis statt trail.length>1', () => {
+  assert.ok(!/exposureTuneRampVerified=tuned\.trail\.length>1/.test(html), 'alte Zaehl-Logik noch da');
+  assert.ok(/exposureTuneRampVerified=!!\(tuned\.rampEvidence\|\|tuned\.hasVerify\)/.test(html));
+  assert.ok(/rampReactionObserved\(pendingStep,/.test(html), 'tuneExposure wertet die Reaktion nicht aus');
+});
+t('Schwarzwert-Schluessel stehen VOR dem ersten loadBlackLevel()-Aufruf (TDZ)', () => {
+  const first = html.search(/^blackLevelRGB=loadBlackLevel\(\)|^let blackLevelLin=/m);
+  assert.ok(first > 0, 'Startaufruf nicht gefunden');
+  const k1 = html.indexOf("const BLACKLEVEL_KEY="), k2 = html.indexOf("const BLACKLEVEL_RGB_KEY=");
+  assert.ok(k1 > 0 && k1 < first, 'BLACKLEVEL_KEY nach dem ersten Aufruf');
+  assert.ok(k2 > 0 && k2 < first, 'BLACKLEVEL_RGB_KEY nach dem ersten Aufruf');
+  assert.strictEqual(html.split("const BLACKLEVEL_KEY=").length, 2, 'doppelt deklariert');
+});
+t('Schwarzwert: gespeicherter Wert wird beim Seitenstart wirklich gelesen (Laufzeit-Test)', () => {
+  // Skript-Ausschnitt von den Schluesseln bis einschliesslich Startaufruf ausfuehren,
+  // mit echter Reihenfolge aus index.html - ein ReferenceError wuerde still auf 0 fallen.
+  const a = html.indexOf("const BLACKLEVEL_KEY=");
+  const b = html.indexOf("function blackLevelY");
+  const c = html.indexOf("function loadBlackLevel");
+  const d = html.indexOf("async function measureBlackLevel");
+  const e = html.indexOf("let blackLevelLin=0,blackLevelRGB");
+  const f = html.indexOf("\n", html.indexOf("blackLevelRGB=loadBlackLevel();blackLevelLin=blackLevelY(blackLevelRGB);"));
+  assert.ok([a, b, c, d, e, f].every(x => x > 0));
+  const store = { 'ppfd_blackLevelRGB_v1_user': JSON.stringify({ r: 0.01, g: 0.02, b: 0.03 }) };
+  const run = new Function('Y_R', 'Y_G', 'Y_B', 'localStorage', `"use strict";
+    let cameraFacing='user';
+    ${html.slice(a, html.indexOf("\n", html.indexOf("const BLACKLEVEL_RGB_KEY=")))}
+    ${html.slice(b, d)}
+    ${html.slice(e, f)}
+    return {blackLevelRGB,blackLevelLin};`);
+  const r = run(P.Y_R, P.Y_G, P.Y_B, { getItem: k => store[k] ?? null });
+  assert.deepStrictEqual(r.blackLevelRGB, { r: 0.01, g: 0.02, b: 0.03 });
+  assert.ok(r.blackLevelLin > 0);
+});
+t('Kalibrieren: Q-Gate und Profilwechsel-Sperre vor dem Speichern', () => {
+  const i = html.indexOf('function applyCalibration()');
+  const j = html.indexOf('localStorage.setItem(calibStorageKey()', i);
+  const body = html.slice(i, j);
+  assert.ok(/profileSwitchPending\)\{showError/.test(body), 'Profilwechsel-Sperre fehlt');
+  assert.ok(/lastQuality&&lastQuality\.qGate<Q_GATE_HOLD\)\{showError/.test(body), 'Q-Gate fehlt');
+});
+t('Profilwechsel: Faktor sofort uebernommen, Sperre bis zum Frame mit neuem Profil', () => {
+  const i = html.indexOf("getElementById('lightSourceSelect').addEventListener('change'");
+  const h = html.slice(i, i + 1800);
+  assert.ok(/profileSwitchPending=true/.test(h) && /lastAiUpdate=0/.test(h));
+  assert.ok(/currentFactor=LIGHT_PROFILES\[manualLightKey\]\.factor/.test(h), 'Faktor nicht sofort gesetzt');
+  assert.ok(/lastAiUpdate=timestamp;\s*profileSwitchPending=false/.test(html), 'Sperre wird nicht im Profil-Block geloest');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
