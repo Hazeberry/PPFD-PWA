@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.23</title>
+<title>PPFD Meter Pro v3.4.24</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.23</span>
+  <span class="app-title">PPFD Meter Pro v3.4.24</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.23 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.24 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -220,6 +220,7 @@
     Gehaltener Wert abgedunkelt mit Abzeichen · „Belichtung/ISO nicht gemeldet“ im Software-Fallback · Service Worker räumt nur eigene Caches<br>
     Kanalweiser Schwarzwert · Stetiger ISO-Faktor · Unsicherheit durch affine Kalibrierung fortgepflanzt<br>
     Schwarzwert beim Start geladen · Manuell-Nachweis nur durch beobachtete Reaktion · Kalibrieren gesperrt bei Profilwechsel und geschlossenem Q-Gate<br>
+    Manuell-Nachweis nur über gemeldete Belichtungszeit · Unsicherheit nahe Kalibrier-Nullpunkt „nicht quantifizierbar“ · Altkalibrierung (altes ISO-Modell) gekennzeichnet<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -730,23 +731,26 @@ function computeUncertainty(o){
 // unkalibrierten Rohwert. Die absolute Unsicherheit der Steigung ist
 // slope*raw*u; bezogen auf das Ergebnis slope*raw+offset ergibt sich der Faktor
 // g = slope*raw/(slope*raw+offset). Bei negativem Offset (Zwei-Punkt-Fit) ist
-// g>1 und waechst gegen die Null-Zone unbegrenzt - die frueher angezeigte
-// Prozentzahl bildete das nicht ab. Positiver Offset wuerde g<1 geben; das
-// wird NICHT als Entlastung gewertet (der Offset ist selbst unsicher, seine
-// Groesse ohne Vergleichsmessungen nicht bezifferbar), g wird daher auf >=1
-// begrenzt. Obergrenze AFFINE_GAIN_MAX, damit die Anzeige endlich bleibt;
-// Ergebnis <=0 (Null-Zone) liefert die Obergrenze.
-const AFFINE_GAIN_MAX=10;
+// g>1 und waechst gegen die Null-Zone unbegrenzt. Positiver Offset wuerde g<1
+// geben; das wird NICHT als Entlastung gewertet (der Offset ist selbst
+// unsicher, seine Groesse ohne Vergleichsmessungen nicht bezifferbar), g>=1.
+// v3.4.24 FIX: Keine kuenstliche Obergrenze mehr - ein gekappter Faktor
+// (raw=100.01, offset=-100: rechnerisch 10001, ausgewiesen 10) zeigte nahe der
+// Nullstelle eine viel zu kleine Unsicherheit. Stattdessen: ab g>AFFINE_GAIN_LIMIT
+// (oder Ergebnis <=0) ist die relative Unsicherheit NICHT zuverlaessig
+// quantifizierbar (unquantifiable=true, uRel/uSys/uRand=null).
+const AFFINE_GAIN_LIMIT=5;
 function affineUncertaintyGain(raw,slope,offset){
   if(!(slope>0)||!Number.isFinite(offset)||offset===0||!(raw>0)) return 1;
   const lin=slope*raw,res=lin+offset;
-  if(!(res>0)) return AFFINE_GAIN_MAX;
-  return Math.min(AFFINE_GAIN_MAX,Math.max(1,lin/res));
+  if(!(res>0)) return Infinity;
+  return Math.max(1,lin/res);
 }
 function propagateAffineUncertainty(u,raw,slope,offset){
   const g=affineUncertaintyGain(raw,slope,offset);
-  if(g===1) return Object.assign({},u,{affineGain:1});
-  return Object.assign({},u,{uRel:u.uRel*g,uSys:u.uSys*g,uRand:u.uRand*g,affineGain:g});
+  if(g===1) return Object.assign({},u,{affineGain:1,unquantifiable:false});
+  if(g>AFFINE_GAIN_LIMIT) return Object.assign({},u,{uRel:null,uSys:null,uRand:null,affineGain:Number.isFinite(g)?g:null,unquantifiable:true});
+  return Object.assign({},u,{uRel:u.uRel*g,uSys:u.uSys*g,uRand:u.uRand*g,affineGain:g,unquantifiable:false});
 }
 
 // v3.4.22: ISO-Korrekturfaktor der Kalibrierkonstante, STETIG. Vorher Stufen
@@ -876,20 +880,19 @@ function heldReason(o){
 }
 // v3.4.22: Hat die Kamera auf einen Rampen-Schritt BEOBACHTBAR reagiert?
 // Vorher galt trail.length>1 (= mehrere Stellversuche) als Nachweis der
-// manuellen Kontrolle. Das belegt nur, dass die App es versucht hat: eine
-// Kamera, die alle Anforderungen ignoriert und ausdruecklich 'continuous'
-// meldet, wurde trotzdem als "Manuell" akzeptiert.
-// step={dir:+1|-1 (Belichtung laenger/kuerzer), liveBefore, yBefore}.
-// Beleg = gemeldete Belichtungszeit bewegt sich richtungskonsistent (>20 %)
-// ODER die Bildhelligkeit aendert sich richtungskonsistent (>5 Stufen).
-function rampReactionObserved(step,liveNow,yNow){
+// manuellen Kontrolle - das belegt nur, dass die App es versucht hat.
+// v3.4.24 FIX: Eine Helligkeitsaenderung allein belegt KEINE Kamerakontrolle
+// (die Szene kann heller werden, waehrend die Kamera alle Stellbefehle
+// ignoriert und weiter automatisch belichtet). Beleg ist deshalb nur die
+// GEMELDETE Belichtungszeit: sie muss sich richtungskonsistent (>20 %) bewegen.
+// step={dir:+1|-1 (Belichtung laenger/kuerzer), liveBefore}.
+// Meldet ein Geraet keine Belichtungszeit, gibt es hier keinen Beleg - dann
+// entscheidet der Verify-Schritt bzw. die ehrliche Software-Rueckfall-Logik.
+function rampReactionObserved(step,liveNow){
   if(!step||!(step.dir===1||step.dir===-1)) return false;
   const lb=step.liveBefore;
-  const settingsMoved=Number.isFinite(lb)&&Number.isFinite(liveNow)&&
+  return Number.isFinite(lb)&&Number.isFinite(liveNow)&&
     Math.abs(liveNow-lb)>Math.max(2,0.2*lb)&&((liveNow>lb)===(step.dir>0));
-  const yMoved=Number.isFinite(step.yBefore)&&Number.isFinite(yNow)&&
-    Math.abs(yNow-step.yBefore)>5&&((yNow>step.yBefore)===(step.dir>0));
-  return settingsMoved||yMoved;
 }
 /* ===PURE-PIPELINE-END=== */
 
@@ -1032,6 +1035,14 @@ const BLACKLEVEL_RGB_KEY='ppfd_blackLevelRGB_v1';
 // fungiert weiterhin als STEIGUNG, calibOffset als additiver Term.
 const CALIB2_KEY='ppfd_calib2_v1';
 let calibOffset=0,calibPoints=0;
+// v3.4.24: Die ISO-Kurve (isoCalibFactor) wurde in v3.4.22 geaendert; die Rohwerte
+// frueher gespeicherter Kalibrierpunkte basieren auf der alten Stufenfunktion.
+// Neue Speicherstaende tragen isoModel:2. Alles andere gilt als 'altes ISO-Modell':
+// bei ISO 401-1599 weicht der Rohwert um bis zu ~5-7 % ab, ohne dass die
+// Kalibrierung das weiss. Sie wird weiter angewendet (Nutzerdaten werden nicht
+// stillschweigend entwertet), aber gekennzeichnet - Neukalibrierung empfohlen.
+const ISO_MODEL=2;
+let calibIsoLegacy=false;
 // v3.4.10: Stuetzstellen der aktiven Kalibrierung, damit calibRangeStatus()
 // pro Frame ohne localStorage-Zugriff auskommt. Werden bei jedem Laden und
 // jedem Speichern mitgefuehrt; null = Bereich unbekannt (Legacy-Faktor ohne
@@ -1054,12 +1065,13 @@ function calibLegacyKey(){return CALIB2_KEY+'_'+cameraFacing;}
 function readCalib2(key){try{return JSON.parse(localStorage.getItem(key))||null;}catch(e){return null;}}
 function loadCalib2Data(){return readCalib2(calibStorageKey());}
 function loadCalib(){
-  calibLegacyScope=false;
+  calibLegacyScope=false;calibIsoLegacy=false;
   calibP1=null;calibP2=null;calibFit=null;
   const d=loadCalib2Data();
   if(d){
     const c=computeCalib2(d.p1||null,d.p2||null);
     if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;
+      calibIsoLegacy=!(d.isoModel>=ISO_MODEL);
       calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c;return;}
   }
   // Legacy-Fallback: vor v3.4.3 gespeicherte Kalibrierung (nur pro Kamera).
@@ -1070,11 +1082,12 @@ function loadCalib(){
   if(legacy){
     const c=computeCalib2(legacy.p1||null,legacy.p2||null);
     if(c){customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=true;
+      calibIsoLegacy=!(legacy.isoModel>=ISO_MODEL);
       calibP1=legacy.p1||null;calibP2=legacy.p2||null;calibFit=c;return;}
   }
   customCalibFactor=loadCalibFactor();calibOffset=0;calibPoints=customCalibFactor!==null?1:0;
   if(customCalibFactor!==null){
-    calibLegacyScope=true;
+    calibLegacyScope=true;calibIsoLegacy=true;
     // v3.4.11 FIX (Review/tin): Auch der ganz alte Steigungs-Faktor (CALIB_KEY,
     // v3.3.x) braucht einen calibFit - sonst meldet calibRangeStatus() den
     // Zustand 'uncalibrated', WAEHREND die App kalibriert ist, und die
@@ -1104,6 +1117,8 @@ function migrateCalibrationStorage(){
 }
 let cameraFacing=(()=>{try{return localStorage.getItem('ppfd_camera')||'user';}catch(e){return 'user';}})();
 loadCalib(); // v3.4.0: bevorzugt Zwei-Punkt-Storage, Legacy-Faktor als Fallback
+const ISO_LEGACY_MSG='Gespeicherte Kalibrierung stammt aus einer Version mit anderer ISO-Kurve – Werte bei ISO 401–1599 können um bis zu ~5–7 % abweichen. Bitte neu kalibrieren.';
+if(calibIsoLegacy) setTimeout(()=>showError(ISO_LEGACY_MSG),2500);
 let blackLevelLin=0,blackLevelRGB={r:0,g:0,b:0};
 blackLevelRGB=loadBlackLevel();blackLevelLin=blackLevelY(blackLevelRGB);
 
@@ -1423,17 +1438,17 @@ async function tuneExposure(track,cap,startReq){
     let stall=0;
     while(Math.abs(y-prevY)<2&&stall<5&&performance.now()<deadline){await new Promise(r=>setTimeout(r,200));y=sampleFrameY();stall++;}
     if(pendingStep){
-      if(rampReactionObserved(pendingStep,track.getSettings().exposureTime,y)) rampEvidence=true;
+      if(rampReactionObserved(pendingStep,track.getSettings().exposureTime)) rampEvidence=true;
       pendingStep=null;
     }
     prevY=y;
     if(y<25&&req<capMax){
-      pendingStep={dir:1,liveBefore:track.getSettings().exposureTime,yBefore:y};
+      pendingStep={dir:1,liveBefore:track.getSettings().exposureTime};
       req=Math.min(req*4,capMax);
       try{await track.applyConstraints({advanced:[{exposureTime:req}]});}catch(e){break;}
       trail.push(req);
     }else if(y>220&&req>capMin){
-      pendingStep={dir:-1,liveBefore:track.getSettings().exposureTime,yBefore:y};
+      pendingStep={dir:-1,liveBefore:track.getSettings().exposureTime};
       req=Math.max(req/4,capMin);
       try{await track.applyConstraints({advanced:[{exposureTime:req}]});}catch(e){break;}
       trail.push(req);
@@ -1631,7 +1646,7 @@ function updateCalibDisplay(){
   const off=calibOffset!==0?' '+(calibOffset>0?'+':'−')+Math.abs(calibOffset).toFixed(1):'';
   // v3.4.3: Geltungsbereich sichtbar machen - eine Kalibrierung gilt nur fuer
   // das Lichtprofil, unter dem sie erhoben wurde (s. calibStorageKey()).
-  const scope=calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel();
+  const scope=(calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel())+(calibIsoLegacy?' · altes ISO-Modell – neu kalibrieren':'');
   el.textContent='×'+customCalibFactor.toFixed(4)+off+' ('+calibPoints+' Punkt'+(calibPoints>1?'e':'')+')'+scope;
 }
 function calibScopeLabel(){
@@ -1667,8 +1682,13 @@ function applyCalibration(){
   // einen ggf. vorhandenen zweiten Punkt.
   const pt={raw:currentRawPPFDUncalibrated,ref:refPPFD};
   let d=loadCalib2Data();
+  // v3.4.24: Punkte aus dem alten ISO-Modell nicht mit einem neuen mischen -
+  // die Gerade laege sonst zwischen zwei verschiedenen Rohwert-Skalen.
+  let isoReset=false;
+  if(d&&d.p1&&!(d.isoModel>=ISO_MODEL)){d=null;isoReset=true;}
   if(!d||!d.p1) d={p1:pt,p2:null};
   else d.p2=pt;
+  d.isoModel=ISO_MODEL;
   const c=computeCalib2(d.p1,d.p2);
   if(!c){
     showError('Kalibrierpunkte unbrauchbar: Rohwerte zu nah beieinander oder Steigung ≤ 0. Zweiten Punkt bei deutlich anderer Helligkeit messen (z.B. 100 und 1000 µmol).');
@@ -1683,9 +1703,10 @@ function applyCalibration(){
   try{localStorage.setItem(calibStorageKey(),JSON.stringify(d));}catch(e){}
   try{localStorage.removeItem(calibLegacyKey());}catch(e){}
   try{localStorage.removeItem(CALIB_KEY+'_'+cameraFacing);}catch(e){} // Legacy-Faktor ersetzt
-  customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;
+  customCalibFactor=c.slope;calibOffset=c.offset;calibPoints=c.points;calibLegacyScope=false;calibIsoLegacy=false;
   calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c; // v3.4.10: Stuetzstellen mitziehen
   updateCalibDisplay();
+  if(isoReset) showError('Frühere Kalibrierpunkte stammten aus dem alten ISO-Modell und wurden verworfen – dies ist jetzt Punkt 1.');
   if(c.clamped){showError('Steigung außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
   if(c.points===1){
     // Modal offen lassen: direkt zur zweiten Intensität übergehen möglich.
@@ -1722,7 +1743,7 @@ function countCalibKeys(facing){
 // Kalibrierung), aber gemeldet, wenn dort noch etwas liegt - ein
 // Aufbau-Wechsel betrifft sie oft ebenso.
 function resetCalibration(){
-  customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;
+  customCalibFactor=null;calibOffset=0;calibPoints=0;calibLegacyScope=false;calibIsoLegacy=false;
   calibP1=null;calibP2=null;calibFit=null; // v3.4.10
   let removed=0;
   for(const k of calibKeysFor(cameraFacing)){
@@ -1789,7 +1810,7 @@ function exportTrainCSV(){
   // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
   // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
   // "Gruppe unbekannt", nicht "eigene Gruppe".
-  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -2491,6 +2512,7 @@ function processLoop(timestamp){
     calibSpanLo:lastRange?lastRange.lo:null,
     calibSpanHi:lastRange?lastRange.hi:null,
     calibProfil:customCalibFactor===null?null:manualLightKey,
+    calibIsoModell:customCalibFactor===null?null:(calibIsoLegacy?1:ISO_MODEL),
     calibGeltung:customCalibFactor===null?null:(calibLegacyScope?'profilunabhaengig':'profilspezifisch'),
     signalLevel:signalStatus.level,
     lichtquelleModus:manualLightKey!=='AUTO'?'manuell':'auto',
@@ -2551,12 +2573,14 @@ function processLoop(timestamp){
     // Referenzmessungen geprueft. Dasselbe gilt fuer "jeder dritte Messwert"
     // oben: auch die 68 % bei k=1 sind unter dieser Annahme gerechnet.
     // Pruefbar ist es erst mit gepoolten CSV-Daten (README, Unsicherheitsbudget).
-    const uExp=lastUncertainty.uRel*2;
+    const uQuantifiable=lastUncertainty.uRel!==null&&Number.isFinite(lastUncertainty.uRel);
+    const uExp=uQuantifiable?lastUncertainty.uRel*2:null;
     // v3.4.10: Geltungsbereich der Kalibrierung mit anzeigen. Bewusst in
     // dieser Zeile - sie beantwortet die Frage "wie sehr kann ich der Zahl
     // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
-    document.getElementById('uncertaintyVal').textContent='Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)'
+    document.getElementById('uncertaintyVal').textContent=(uQuantifiable?'Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)':'Unsicherheit nicht zuverlässig quantifizierbar (nahe Kalibrier-Nullpunkt)')
       +(customCalibFactor===null?' · unkalibriert':'')
+      +(calibIsoLegacy&&customCalibFactor!==null?' · Kalibrierung mit altem ISO-Modell':'')
       +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
       +(exposureGuessed?' · Belichtung/ISO nicht gemeldet':'');
     setCalibRangeLine(calibRangeSuffix(lastRange));
