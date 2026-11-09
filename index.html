@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.25</title>
+<title>PPFD Meter Pro v3.4.26</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.25</span>
+  <span class="app-title">PPFD Meter Pro v3.4.26</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.25 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.26 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -222,6 +222,7 @@
     Schwarzwert beim Start geladen · Manuell-Nachweis nur durch beobachtete Reaktion · Kalibrieren gesperrt bei Profilwechsel und geschlossenem Q-Gate<br>
     Manuell-Nachweis nur über gemeldete Belichtungszeit · Unsicherheit nahe Kalibrier-Nullpunkt „nicht quantifizierbar“ · Altkalibrierung (altes ISO-Modell) gekennzeichnet<br>
     Verify-Nachweis nur über gemeldete Belichtungszeit · Null-Zone auch bei Rohwert 0 erkannt<br>
+    „Belichtung/ISO nicht gemeldet“ auch im Manuell-Modus · Manuell nur mit Beleg (kein stiller Durchlass ohne Modus-Meldung)<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -915,6 +916,20 @@ function verifyReactionObserved(base,testReq,liveTest,liveBack){
   return Number.isFinite(liveTest)&&Number.isFinite(liveBack)&&
     Math.abs(liveTest-liveBack)>Math.max(2,0.2*base)&&
     ((testReq>base)===(liveTest>liveBack));
+}
+// v3.4.26 FIX: Ist der Manuell-Modus belegt? Bisher genuegte '!ns.exposureMode':
+// ein Geraet, das weder Modus noch Belichtungszeit meldet, galt ohne jeden
+// Beleg als "Manuell" - und weil exposureGuessed den Manuell-Modus pauschal
+// ausnahm, fehlte dann auch der Hinweis "Belichtung/ISO nicht gemeldet".
+// Beleg ist jetzt nur: gemeldeter Modus 'manual', gemeldete Belichtungszeit
+// gleich der angeforderten (+-2 Einheiten), oder eine beobachtete Reaktion
+// (Rampe/Verify, s. rampReactionObserved/verifyReactionObserved).
+// Wurde keine manuelle Belichtung angefordert, gibt es nichts zu belegen.
+function confirmManualExposure(o){
+  if(!o.attempted) return true;
+  if(o.reportedMode==='manual') return true;
+  const expMatch=Number.isFinite(o.liveExp)&&Number.isFinite(o.requestedExp)&&Math.abs(o.liveExp-o.requestedExp)<=2;
+  return expMatch||!!o.rampVerified;
 }
 /* ===PURE-PIPELINE-END=== */
 
@@ -1625,22 +1640,32 @@ async function applyHardwareConstraints(stream){
       document.getElementById('debugExpRow').style.display='flex';
       document.getElementById('debugExpVal').textContent=debugStr;
       console.log('[PPFD DEBUG]',debugStr);
-      result.iso=ns.iso||result.iso;
-      const rawExpSec=ns.exposureTime?ns.exposureTime*EXP_UNIT:result.exposureTime;
+      // v3.4.26 FIX: Ist-Werte und OB sie gemeldet wurden auch im Manuell-Pfad
+      // festhalten (vorher blieben exposureReported/isoReported hier immer false
+      // und die Anzeige nahm den Manuell-Modus pauschal aus). Ohne Meldung ist
+      // der ANGEFORDERTE Wert die beste Schaetzung - vorher wurde der Startwert
+      // von vor dem Stellbefehl benutzt.
+      const reqEstimate={
+        exposureTime:Number.isFinite(constraints.exposureTime)?constraints.exposureTime*EXP_UNIT:result.exposureTime,
+        iso:Number.isFinite(constraints.iso)?constraints.iso:result.iso
+      };
+      const rawExpSec=ns.exposureTime?ns.exposureTime*EXP_UNIT:reqEstimate.exposureTime;
       if(rawExpSec>2||rawExpSec<1e-6){
         console.warn('[PPFD] Unplausible exposureTime:',rawExpSec,'s – Einheiten-Mismatch? Fallback auf Software-Gain.');
         result.exposureTime=1/250;
         result.fallbackMode='exposure-unit-mismatch';
         return result;
       }
-      result.exposureTime=rawExpSec;
+      Object.assign(result,readLiveExposure(ns,reqEstimate,EXP_UNIT));
       result.frameRate=ns.frameRate||result.frameRate;
       const attemptedManualExposure=(constraints.exposureMode==='manual');
-      const expMatch=attemptedManualExposure && ns.exposureTime!==undefined && ns.exposureTime!==null &&
-        constraints.exposureTime!==undefined &&
-        Math.abs(ns.exposureTime-constraints.exposureTime)<=2;
-      const modeConfirmed=!attemptedManualExposure || !ns.exposureMode ||
-        ns.exposureMode==='manual' || expMatch || result.exposureTuneRampVerified;
+      const modeConfirmed=confirmManualExposure({
+        attempted:attemptedManualExposure,
+        reportedMode:ns.exposureMode,
+        liveExp:ns.exposureTime,
+        requestedExp:constraints.exposureTime,
+        rampVerified:result.exposureTuneRampVerified
+      });
       if(!modeConfirmed){
         console.warn('[PPFD] Weder exposureMode noch exposureTime bestätigen Manual-Lock: mode=',ns.exposureMode,'angefragt=',constraints.exposureTime,'live=',ns.exposureTime);
         try{await track.applyConstraints({advanced:[{exposureMode:'continuous'}]});}catch(e){}
@@ -2339,6 +2364,7 @@ function processLoop(timestamp){
         }else{
           exposureDriftStrikes=0;
           hardwareSettings.exposureTime=liveExpSec;
+          hardwareSettings.exposureReported=true; // v3.4.26
         }
       }
     }
@@ -2566,7 +2592,9 @@ function processLoop(timestamp){
   // einem geratenen Wert (s. readLiveExposure).
   // v3.4.22: auch ISO beruecksichtigen (isoReported wurde erfasst, aber nie
   // ausgewertet) - die Formel teilt durch ISO*Belichtungszeit.
-  const exposureGuessed=!!hardwareSettings&&!hardwareSettings.constraintsApplied&&!(hardwareSettings.exposureReported&&hardwareSettings.isoReported);
+  // v3.4.26 FIX: gilt in JEDEM Modus. Vorher war der Manuell-Modus pauschal
+  // ausgenommen, obwohl auch dort ein Geraet Belichtung/ISO nicht melden kann.
+  const exposureGuessed=!!hardwareSettings&&!(hardwareSettings.exposureReported&&hardwareSettings.isoReported);
   const qGateOpen=!lastQuality||lastQuality.qGate>=Q_GATE_HOLD;
   // v3.4.14: Waehrend stepDownExposureManual() umstellt, kommen Frames mit
   // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese

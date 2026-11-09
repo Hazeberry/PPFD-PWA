@@ -23,7 +23,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
   RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
-  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved };`)();
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -1346,6 +1346,39 @@ t('Rohwert 0: positiver/kein Offset bleibt neutral, ungueltige Eingaben ebenso',
   assert.strictEqual(P.affineUncertaintyGain(NaN, 1, -100), 1);
   assert.strictEqual(P.affineUncertaintyGain(-5, 1, -100), Infinity, 'negativer Rohwert wie 0');
   assert.strictEqual(P.affineUncertaintyGain(0, 0, -100), 1, 'ungueltige Steigung');
+});
+
+console.log('== v3.4.26: Manuell-Beleg und Hinweis "Belichtung/ISO nicht gemeldet" ==');
+t('Regression: Geraet meldet weder Modus noch Belichtungszeit -> KEIN Manuell-Beleg', () => {
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: undefined, liveExp: undefined, requestedExp: 40, rampVerified: false }), false);
+});
+t('confirmManualExposure: gemeldeter Modus, Treffer der Zeit oder beobachtete Reaktion belegen', () => {
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'manual' }), true);
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: undefined, liveExp: 41, requestedExp: 40 }), true);
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'continuous', liveExp: 100, requestedExp: 40, rampVerified: true }), true);
+  assert.strictEqual(P.confirmManualExposure({ attempted: false }), true, 'nichts angefordert -> nichts zu belegen');
+});
+t('confirmManualExposure: continuous + abweichende Zeit + keine Reaktion -> kein Beleg', () => {
+  assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'continuous', liveExp: 100, requestedExp: 40, rampVerified: false }), false);
+});
+t('Hinweis gilt auch im Manuell-Modus (kein pauschaler Ausschluss ueber constraintsApplied)', () => {
+  const m = html.match(/const exposureGuessed=([^;]*);/);
+  assert.ok(m, 'exposureGuessed nicht gefunden');
+  assert.ok(!/constraintsApplied/.test(m[1]), 'Manuell-Modus weiterhin ausgenommen: ' + m[1]);
+  assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(m[1]));
+});
+t('Manuell-Pfad setzt die Meldungs-Flags und schaetzt mit dem ANGEFORDERTEN Wert', () => {
+  const i = html.indexOf('async function applyHardwareConstraints'), j = html.indexOf('function loadCalibFactor', i);
+  const f = html.slice(i, j);
+  assert.ok(/Object\.assign\(result,readLiveExposure\(ns,reqEstimate,EXP_UNIT\)\)/.test(f), 'Flags im Manuell-Pfad nicht gesetzt');
+  assert.ok(/exposureTime:Number\.isFinite\(constraints\.exposureTime\)\?constraints\.exposureTime\*EXP_UNIT/.test(f), 'Schaetzung nicht aus dem angeforderten Wert');
+  assert.ok(!/!ns\.exposureMode\s*\|\|/.test(f), 'trivialer Beleg "!ns.exposureMode" noch da');
+  assert.ok(/confirmManualExposure\(\{/.test(f));
+});
+t('readLiveExposure mit Anforderungs-Schaetzung: keine Meldung -> angeforderter Wert, Flags false', () => {
+  const r = P.readLiveExposure({}, { exposureTime: 40e-4, iso: 100 }, 1e-4);
+  approx(r.exposureTime, 40e-4, 1e-12); assert.strictEqual(r.iso, 100);
+  assert.strictEqual(r.exposureReported, false); assert.strictEqual(r.isoReported, false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
