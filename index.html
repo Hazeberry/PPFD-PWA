@@ -776,6 +776,20 @@ function isoCalibFactor(iso){
   return x<=1?1-0.05*x:0.95-0.07*(x-1);
 }
 
+// v3.4.27: Alte Stufenfunktion (bis v3.4.21) - nur noch, um zu beziffern, wo
+// sich der Rohwert durch die stetige Kurve ueberhaupt geaendert hat.
+function isoCalibFactorLegacy(iso){
+  if(!(iso>0)) return 1;
+  return iso>800?0.88:(iso>400?0.95:1);
+}
+// Verhaeltnis neuer/alter Rohwert bei derselben Szene und ISO. Mit einer vor
+// v3.4.22 erhobenen Kalibrierung liest die App genau um diesen Faktor anders
+// als damals. 1 = unveraendert - das gilt fuer ISO <=400, ISO 800 und ISO
+// >=1600, also insbesondere fuer den Manuell-Modus (dort setzt die App die
+// kleinste ISO ab 100). Groesste Abweichung knapp ueber ISO 800: 0.95/0.88 = +8 %.
+function isoModelShift(iso){return isoCalibFactor(iso)/isoCalibFactorLegacy(iso);}
+const ISO_SHIFT_NOTICE=0.005; // ab 0,5 % Unterschied wird die Altkalibrierung gemeldet
+
 // v3.4.0: Zwei-Punkt-Kalibrierung. Aus bis zu zwei Referenzpunkten
 // ({raw:rawPPFDUncalibrated, ref:referenzPPFD}) eine affine Korrektur
 // bestimmen: ppfd = slope*raw + offset. Ein Punkt => offset 0 (bisheriges
@@ -1075,9 +1089,15 @@ let calibOffset=0,calibPoints=0;
 // v3.4.24: Die ISO-Kurve (isoCalibFactor) wurde in v3.4.22 geaendert; die Rohwerte
 // frueher gespeicherter Kalibrierpunkte basieren auf der alten Stufenfunktion.
 // Neue Speicherstaende tragen isoModel:2. Alles andere gilt als 'altes ISO-Modell':
-// bei ISO 401-1599 weicht der Rohwert um bis zu ~5-7 % ab, ohne dass die
-// Kalibrierung das weiss. Sie wird weiter angewendet (Nutzerdaten werden nicht
-// stillschweigend entwertet), aber gekennzeichnet - Neukalibrierung empfohlen.
+// bei ISO 401-1599 (ausser genau 800) liest die App damit bis zu 8 % hoeher als
+// zum Zeitpunkt der Kalibrierung (s. isoModelShift). Die Kalibrierung wird weiter
+// angewendet (Nutzerdaten werden nicht stillschweigend entwertet).
+// v3.4.27 FIX: Gewarnt wird nur noch, wenn die AKTUELLE ISO im betroffenen Band
+// liegt. v3.4.24 warnte pauschal - bei jedem Start per Meldung und dauerhaft in
+// der Unsicherheitszeile -, auch im Manuell-Modus bei ISO 100, wo sich der
+// Messwert gar nicht geaendert hat. Loswerden liess sich das nur durch
+// Neukalibrieren, also mit einem PAR-Meter, das viele nur einmal geliehen
+// hatten. Eine Warnung, die staendig steht, liest niemand mehr.
 const ISO_MODEL=2;
 let calibIsoLegacy=false;
 // v3.4.10: Stuetzstellen der aktiven Kalibrierung, damit calibRangeStatus()
@@ -1154,8 +1174,11 @@ function migrateCalibrationStorage(){
 }
 let cameraFacing=(()=>{try{return localStorage.getItem('ppfd_camera')||'user';}catch(e){return 'user';}})();
 loadCalib(); // v3.4.0: bevorzugt Zwei-Punkt-Storage, Legacy-Faktor als Fallback
-const ISO_LEGACY_MSG='Gespeicherte Kalibrierung stammt aus einer Version mit anderer ISO-Kurve – Werte bei ISO 401–1599 können um bis zu ~5–7 % abweichen. Bitte neu kalibrieren.';
-if(calibIsoLegacy) setTimeout(()=>showError(ISO_LEGACY_MSG),2500);
+// v3.4.27: Meldung nicht mehr pauschal beim Start, sondern einmal je Sitzung,
+// sobald wirklich bei einer betroffenen ISO gemessen wird (s. processLoop).
+const pctSigned=(f)=>(f>=1?'+':'−')+Math.abs((f-1)*100).toFixed(0)+' %';
+const isoLegacyMsg=(iso,shift)=>'Kalibrierung stammt aus einer Version mit anderer ISO-Kurve: bei ISO '+Math.round(iso)+' liest die App jetzt '+pctSigned(shift)+' gegenüber damals. Bitte neu kalibrieren.';
+let isoLegacyToastShown=false;
 let blackLevelLin=0,blackLevelRGB={r:0,g:0,b:0};
 blackLevelRGB=loadBlackLevel();blackLevelLin=blackLevelY(blackLevelRGB);
 
@@ -1691,7 +1714,7 @@ function updateCalibDisplay(){
   const off=calibOffset!==0?' '+(calibOffset>0?'+':'−')+Math.abs(calibOffset).toFixed(1):'';
   // v3.4.3: Geltungsbereich sichtbar machen - eine Kalibrierung gilt nur fuer
   // das Lichtprofil, unter dem sie erhoben wurde (s. calibStorageKey()).
-  const scope=(calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel())+(calibIsoLegacy?' · altes ISO-Modell – neu kalibrieren':'');
+  const scope=(calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel())+(calibIsoLegacy?' · vor v3.4.22 erhoben (nur bei ISO 401–1599 bis +8 %)':'');
   el.textContent='×'+customCalibFactor.toFixed(4)+off+' ('+calibPoints+' Punkt'+(calibPoints>1?'e':'')+')'+scope;
 }
 function calibScopeLabel(){
@@ -1725,7 +1748,10 @@ function applyCalibration(){
   // v3.4.0: Referenzpunkt hinzufügen (1. Punkt => reine Steigung wie bisher,
   // 2. Punkt => affine Korrektur slope*raw+offset). Der neue Punkt ersetzt
   // einen ggf. vorhandenen zweiten Punkt.
-  const pt={raw:currentRawPPFDUncalibrated,ref:refPPFD};
+  // v3.4.27: ISO und Belichtungszeit des Punkts mitspeichern. Aendert sich die
+  // Rohwert-Basis noch einmal, laesst sich ein Punkt damit exakt umrechnen statt
+  // nur als "alt" zu kennzeichnen - genau diese Angabe fehlte bei v3.4.22.
+  const pt={raw:currentRawPPFDUncalibrated,ref:refPPFD,iso:hardwareSettings?.iso??null,exp:hardwareSettings?.exposureTime??null};
   let d=loadCalib2Data();
   // v3.4.24: Punkte aus dem alten ISO-Modell nicht mit einem neuen mischen -
   // die Gerade laege sonst zwischen zwei verschiedenen Rohwert-Skalen.
@@ -1855,7 +1881,7 @@ function exportTrainCSV(){
   // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
   // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
   // "Gruppe unbekannt", nicht "eigene Gruppe".
-  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','isoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -2559,6 +2585,12 @@ function processLoop(timestamp){
     calibSpanHi:lastRange?lastRange.hi:null,
     calibProfil:customCalibFactor===null?null:manualLightKey,
     calibIsoModell:customCalibFactor===null?null:(calibIsoLegacy?1:ISO_MODEL),
+    // v3.4.27: Rohwert-BASIS des Datenpunkts. rawPPFDUncalibrated haengt an der
+    // ISO-Kurve; Punkte ohne dieses Feld stammen aus der Stufenfunktion (bis
+    // v3.4.21). Ohne die Kennung mischte ein gepoolter Datensatz beide Skalen,
+    // ohne dass es jemand sehen kann - tools/auswertung.js rechnet Altpunkte
+    // damit auf die aktuelle Basis um.
+    isoModell:ISO_MODEL,
     calibGeltung:customCalibFactor===null?null:(calibLegacyScope?'profilunabhaengig':'profilspezifisch'),
     signalLevel:signalStatus.level,
     lichtquelleModus:manualLightKey!=='AUTO'?'manuell':'auto',
@@ -2595,6 +2627,10 @@ function processLoop(timestamp){
   // v3.4.26 FIX: gilt in JEDEM Modus. Vorher war der Manuell-Modus pauschal
   // ausgenommen, obwohl auch dort ein Geraet Belichtung/ISO nicht melden kann.
   const exposureGuessed=!!hardwareSettings&&!(hardwareSettings.exposureReported&&hardwareSettings.isoReported);
+  // v3.4.27: Altkalibrierung nur melden, wo sie sich auswirkt (s. isoModelShift).
+  const isoShift=(calibIsoLegacy&&customCalibFactor!==null)?isoModelShift(effectiveISO):1;
+  const isoLegacyAffects=Math.abs(isoShift-1)>ISO_SHIFT_NOTICE;
+  if(isoLegacyAffects&&!isoLegacyToastShown&&settleStatus.isWarmedUp){isoLegacyToastShown=true;showError(isoLegacyMsg(effectiveISO,isoShift));}
   const qGateOpen=!lastQuality||lastQuality.qGate>=Q_GATE_HOLD;
   // v3.4.14: Waehrend stepDownExposureManual() umstellt, kommen Frames mit
   // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese
@@ -2628,7 +2664,7 @@ function processLoop(timestamp){
     // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
     document.getElementById('uncertaintyVal').textContent=(uQuantifiable?'Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)':'Unsicherheit nicht zuverlässig quantifizierbar (nahe Kalibrier-Nullpunkt)')
       +(customCalibFactor===null?' · unkalibriert':'')
-      +(calibIsoLegacy&&customCalibFactor!==null?' · Kalibrierung mit altem ISO-Modell':'')
+      +(isoLegacyAffects?' · Altkalibrierung: bei ISO '+Math.round(effectiveISO)+' '+pctSigned(isoShift)+' (neu kalibrieren)':'')
       +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
       +(exposureGuessed?' · Belichtung/ISO nicht gemeldet':'');
     setCalibRangeLine(calibRangeSuffix(lastRange));

@@ -23,7 +23,8 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
   RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
-  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure };`)();
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure,
+  isoCalibFactorLegacy, isoModelShift, ISO_SHIFT_NOTICE };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -1306,8 +1307,8 @@ t('Neue Kalibrierung traegt isoModel, alte wird erkannt und nicht mit neuer gemi
   assert.ok(/d\.isoModel=ISO_MODEL/.test(body), 'isoModel wird nicht gespeichert');
 });
 t('Altkalibrierung ist sichtbar: Anzeige, Unsicherheitszeile, Export', () => {
-  assert.ok(/altes ISO-Modell – neu kalibrieren/.test(html));
-  assert.ok(/Kalibrierung mit altem ISO-Modell/.test(html));
+  assert.ok(/vor v3\.4\.22 erhoben/.test(html), 'Kalibrierdialog nennt die Altkalibrierung nicht');
+  assert.ok(/isoLegacyAffects\?' · Altkalibrierung: bei ISO '/.test(html), 'Unsicherheitszeile meldet die Altkalibrierung nicht');
   assert.ok(/calibIsoModell:/.test(html) && /'calibGeltung','calibIsoModell'/.test(html));
   assert.ok(/nicht zuverlässig quantifizierbar/.test(html), 'Anzeige fuer unquantifizierbare Unsicherheit fehlt');
 });
@@ -1379,6 +1380,35 @@ t('readLiveExposure mit Anforderungs-Schaetzung: keine Meldung -> angeforderter 
   const r = P.readLiveExposure({}, { exposureTime: 40e-4, iso: 100 }, 1e-4);
   approx(r.exposureTime, 40e-4, 1e-12); assert.strictEqual(r.iso, 100);
   assert.strictEqual(r.exposureReported, false); assert.strictEqual(r.isoReported, false);
+});
+
+console.log('== v3.4.27: Altkalibrierung nur dort melden, wo sie sich auswirkt ==');
+t('isoModelShift: unveraendert bei ISO <=400, genau 800 und >=1600', () => {
+  for (const iso of [50, 100, 200, 400, 800, 1600, 3200, 6400]) {
+    approx(P.isoModelShift(iso), 1, 1e-12, 'ISO ' + iso);
+  }
+  assert.strictEqual(P.isoModelShift(0), 1); assert.strictEqual(P.isoModelShift(NaN), 1);
+});
+t('isoModelShift: Gegenbeispiel aus dem Review (ISO 1000: 100 -> 105,39) und Maximum +8 %', () => {
+  approx(100 * P.isoModelShift(1000), 105.39, 0.01, 'ISO 1000');
+  let max = 0, bei = 0;
+  for (let iso = 1; iso <= 6400; iso++) { const s = P.isoModelShift(iso); assert.ok(s >= 1 - 1e-12, 'nie niedriger als frueher, ISO ' + iso); if (s > max) { max = s; bei = iso; } }
+  assert.strictEqual(bei, 801, 'groesste Abweichung direkt ueber der alten Stufe');
+  approx(max, 0.95 / 0.88, 2e-4, 'Maximum');
+  assert.ok(max < 1.08, 'Text nennt "bis +8 %", Maximum ist ' + max);
+});
+t('Meldeschwelle: ISO 100 loest nichts aus, ISO 1000 schon', () => {
+  assert.ok(Math.abs(P.isoModelShift(100) - 1) <= P.ISO_SHIFT_NOTICE);
+  assert.ok(Math.abs(P.isoModelShift(1000) - 1) > P.ISO_SHIFT_NOTICE);
+  assert.ok(Math.abs(P.isoModelShift(410) - 1) > P.ISO_SHIFT_NOTICE);
+});
+t('Keine pauschale Meldung beim Seitenstart mehr', () => {
+  assert.ok(!/if\(calibIsoLegacy\) setTimeout\(\(\)=>showError/.test(html), 'Start-Toast fuer jede Altkalibrierung wieder da');
+  assert.ok(/isoLegacyAffects&&!isoLegacyToastShown&&settleStatus\.isWarmedUp/.test(html), 'Meldung haengt nicht an der betroffenen ISO');
+});
+t('Kalibrierpunkt speichert ISO und Belichtungszeit; Datenpunkt die Rohwert-Basis', () => {
+  assert.ok(/const pt=\{raw:currentRawPPFDUncalibrated,ref:refPPFD,iso:hardwareSettings\?\.iso\?\?null,exp:hardwareSettings\?\.exposureTime\?\?null\}/.test(html));
+  assert.ok(/isoModell:ISO_MODEL,/.test(html) && /'calibIsoModell','isoModell'/.test(html), 'isoModell fehlt in Snapshot oder CSV');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
