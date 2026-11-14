@@ -1418,7 +1418,7 @@ t('Keine pauschale Meldung beim Seitenstart mehr', () => {
   assert.ok(/isoLegacyAffects&&!isoLegacyToastShown&&settleStatus\.isWarmedUp/.test(html), 'Meldung haengt nicht an der betroffenen ISO');
 });
 t('Kalibrierpunkt speichert ISO und Belichtungszeit; Datenpunkt die Rohwert-Basis', () => {
-  assert.ok(/const pt=\{raw:currentRawPPFDUncalibrated,ref:refPPFD,iso:hardwareSettings\?\.iso\?\?null,exp:hardwareSettings\?\.exposureTime\?\?null\}/.test(html));
+  assert.ok(/const pt=\{raw:rawCal,ref:refPPFD,iso:hardwareSettings\?\.iso\?\?null,exp:hardwareSettings\?\.exposureTime\?\?null\}/.test(html));
   assert.ok(/isoModell:ISO_MODEL,/.test(html) && /'calibIsoModell','isoModell'/.test(html), 'isoModell fehlt in Snapshot oder CSV');
 });
 
@@ -1517,6 +1517,38 @@ t('Verdrahtung: gesetzt wird erst, wenn das Median-Fenster nur akzeptierte Frame
 t('Verdrahtung: vor dem ersten gueltigen Wert keine Zahl (gehaltene 0.0 ohne Messung)', () => {
   assert.ok(/const hasValue=kalman\.seeded;/.test(html));
   assert.ok(/isClipping\?'———':\(!hasValue\?'–––':/.test(html), 'Anzeige zeigt vor dem ersten Messwert eine Zahl');
+});
+
+console.log('== v3.4.27: Kalibrier-Fenster (Median und Spanne) ==');
+t('RollingMedian.spread: konstantes Fenster 0, Einzelausreisser zaehlt nicht, Sprung schon', () => {
+  const rm = new P.RollingMedian(31);
+  for (let i = 0; i < 31; i++) rm.push(100);
+  assert.strictEqual(rm.spread(), 0);
+  rm.push(200); rm.push(50);                       // zwei Ausreisser von 31
+  assert.strictEqual(rm.value(), 100, 'Median muss die Ausreisser ignorieren');
+  assert.strictEqual(rm.spread(), 0, '10.-90. Perzentil sieht zwei Ausreisser nicht');
+  const sprung = new P.RollingMedian(31);
+  for (let i = 0; i < 16; i++) sprung.push(100);
+  for (let i = 0; i < 15; i++) sprung.push(50);    // Licht hat sich im Fenster halbiert
+  assert.ok(sprung.spread() > 0.4, 'zweigipfliges Fenster nicht erkannt: ' + sprung.spread());
+});
+t('RollingMedian.spread: zu wenige Werte oder Median 0 -> null', () => {
+  const rm = new P.RollingMedian(31);
+  assert.strictEqual(rm.spread(), null);
+  rm.push(1); rm.push(2);
+  assert.strictEqual(rm.spread(), null);
+  const null0 = new P.RollingMedian(5); for (let i = 0; i < 5; i++) null0.push(0);
+  assert.strictEqual(null0.spread(), null);
+});
+t('Verdrahtung: kalibriert wird auf den Fenster-Median, nicht auf den Einzelframe', () => {
+  const i = html.indexOf('function applyCalibration()'), j = html.indexOf('localStorage.setItem(calibStorageKey()', i);
+  const body = html.slice(i, j);
+  assert.ok(/const rawCal=calibRawValue\(\);\s*if\(rawCal===null\)\{showError\(CALIB_RAW_WAIT_MSG\);return;\}/.test(body));
+  assert.ok(/rawSpread>CALIB_RAW_MAX_SPREAD/.test(body), 'Spannen-Pruefung fehlt');
+  assert.ok(!/raw:currentRawPPFDUncalibrated/.test(body), 'Kalibrierpunkt nimmt weiter den Einzelframe');
+  assert.ok(/if\(holdKalman\) calibRawMedian\.reset\(\); else calibRawMedian\.push\(currentRawPPFDUncalibrated\);/.test(html));
+  const resets = (html.match(/calibRawMedian\.reset\(\)/g) || []).length;
+  assert.ok(resets >= 10, 'Fenster wird nur an ' + resets + ' Stellen verworfen - ein Basiswechsel fehlt');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

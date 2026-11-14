@@ -660,6 +660,18 @@ class RollingMedian{
     const s=[...this.buf].sort((a,b)=>a-b);
     return m%2===1?s[(m-1)/2]:(s[m/2-1]+s[m/2])/2;
   }
+  // v3.4.27: Breite des Fensters relativ zum Median (10. bis 90. Perzentil).
+  // Fuer die Frage "steht der Wert?" - ein Fenster, in dem sich das Licht gerade
+  // geaendert hat, ist zweigipflig, sein Median liegt dann auf der alten ODER
+  // der neuen Seite. null, wenn zu wenige Werte oder Median <= 0.
+  spread(){
+    const m=this.buf.length;
+    if(m<3) return null;
+    const s=[...this.buf].sort((a,b)=>a-b);
+    const med=m%2===1?s[(m-1)/2]:(s[m/2-1]+s[m/2])/2;
+    if(!(med>0)) return null;
+    return (s[Math.ceil(0.9*(m-1))]-s[Math.floor(0.1*(m-1))])/med;
+  }
   reset(){this.buf=[];}
 }
 
@@ -1253,6 +1265,36 @@ const ppfdMedian=new RollingMedian(MEDIAN_WINDOW);
 // bestimmen. Gesetzt wird der Filter deshalb erst, wenn das Median-Fenster nur
 // noch akzeptierte Frames enthaelt.
 let acceptedStreak=0;
+// v3.4.27: Kalibriert wird auf den MEDIAN der letzten CALIB_RAW_WINDOW
+// unkalibrierten Rohwerte, nicht mehr auf den Einzelframe im Moment des Klicks.
+// Die Anzeige ist Median- und Kalman-geglaettet; der Wert, der DAUERHAFT in der
+// Kalibrierung landet, war es nicht. Zwei Faelle, in denen ein Einzelframe
+// daneben liegt, ohne dass die Anzeige es zeigt:
+//   - Software-Fallback: Belichtung/ISO werden nur alle SW_POLL_INTERVAL Frames
+//     gelesen. Regelt die Kamera dazwischen nach, teilt die Formel bis zur
+//     naechsten Abfrage durch den alten Wert (nachgestellt: Licht halbiert,
+//     Belichtung verdoppelt -> 9 Frames lang Rohwert 20,5 statt 10,3).
+//   - Flackernde Lampen und Bewegung: Frame-zu-Frame-Streuung im Prozentbereich.
+// 31 Frames sind 0,5-1 s; ungerade, damit der Median ein echter Messwert ist.
+// Das Fenster enthaelt nur akzeptierte Frames (kein Halt, s. processLoop) und
+// wird verworfen, sobald sich die Rohwert-BASIS aendert (Profil, Software-Gain,
+// Schwarzwert, Kamerastart, Belichtungs-Stufe) - calibRawValue() liefert dann
+// null, bis es wieder gefuellt ist.
+const CALIB_RAW_WINDOW=31;
+const calibRawMedian=new RollingMedian(CALIB_RAW_WINDOW);
+function calibRawValue(){return calibRawMedian.buf.length>=CALIB_RAW_WINDOW?calibRawMedian.value():null;}
+// Steht der Wert? Liegen 10. und 90. Perzentil des Fensters mehr als 20 % des
+// Medians auseinander, hat sich das Licht innerhalb des Fensters geaendert
+// (oder es wird gewackelt) - dann lieber warten als raten. 20 % ist bewusst
+// weit: eine flackernde Lampe soll kalibrierbar bleiben, dafuer ist der Median da.
+const CALIB_RAW_MAX_SPREAD=0.20;
+const CALIB_RAW_WAIT_MSG='Messwert wird noch gemittelt – etwa eine Sekunde ruhig halten, dann erneut versuchen.';
+function updateCalibRawDisplay(){
+  const el=document.getElementById('currentRawVal');
+  if(!el) return;
+  const v=calibRawValue();
+  el.textContent=v===null?(isMeasuring&&currentRawPPFDUncalibrated>0?'wird gemittelt …':'–––'):(v<10?v.toFixed(1):String(Math.round(v)));
+}
 let lastQuality=null;
 let lastUncertainty=null;
 const Q_STATUS_LABELS={
@@ -1476,6 +1518,7 @@ async function measureBlackLevel(){
     }
     blackLevelRGB=measuredRGB;
     blackLevelLin=measured;
+    calibRawMedian.reset(); // v3.4.27: Schwarzwert aendert die Rohwert-Basis
     try{
       localStorage.setItem(BLACKLEVEL_RGB_KEY+'_'+startFacing,JSON.stringify(measuredRGB));
       localStorage.setItem(BLACKLEVEL_KEY+'_'+startFacing,blackLevelLin); // Legacy-Key (Y)
@@ -1521,6 +1564,7 @@ function playPing(){
 }
 function resetBlackLevel(){
   blackLevelLin=0;blackLevelRGB={r:0,g:0,b:0};
+  calibRawMedian.reset(); // v3.4.27: s. measureBlackLevel
   try{localStorage.removeItem(BLACKLEVEL_KEY+'_'+cameraFacing);localStorage.removeItem(BLACKLEVEL_RGB_KEY+'_'+cameraFacing);}catch(e){}
   showError('Schwarzwert-Referenz zurückgesetzt (0, keine Subtraktion).');
   updateBlackLevelNote();
@@ -1776,7 +1820,7 @@ function calibScopeLabel(){
   return manualLightKey==='AUTO'?'Auto-Erkennung':(LIGHT_PROFILES[manualLightKey]?.name ?? manualLightKey);
 }
 function openCalibModal(){
-  document.getElementById('currentRawVal').textContent=currentRawPPFDUncalibrated<=0?'–––':(currentRawPPFDUncalibrated<10?currentRawPPFDUncalibrated.toFixed(1):Math.round(currentRawPPFDUncalibrated));
+  updateCalibRawDisplay(); // v3.4.27: derselbe Wert, auf den kalibriert wird - und live (s. processLoop)
   updateCalibDisplay();
   document.getElementById('calibModal').classList.add('open');
 }
@@ -1812,7 +1856,12 @@ function applyCalibration(){
   if(lastQuality&&lastQuality.qGate<Q_GATE_HOLD){showError('Messgüte zu niedrig zum Kalibrieren ('+(Q_WEAKEST_LABELS[lastQuality.gateWeakest]||'Messgüte')+'). Aufbau prüfen und erneut versuchen.');return;}
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
-  if(currentRawPPFDUncalibrated<5){showError('Rohwert zu niedrig zum Kalibrieren ('+currentRawPPFDUncalibrated.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
+  // v3.4.27: Median der letzten Frames statt Einzelframe (s. calibRawMedian).
+  const rawCal=calibRawValue();
+  if(rawCal===null){showError(CALIB_RAW_WAIT_MSG);return;}
+  if(rawCal<5){showError('Rohwert zu niedrig zum Kalibrieren ('+rawCal.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
+  const rawSpread=calibRawMedian.spread();
+  if(rawSpread!==null&&rawSpread>CALIB_RAW_MAX_SPREAD){showError('Messwert schwankt noch (Spanne '+(rawSpread*100).toFixed(0)+' % in der letzten Sekunde) – ruhig halten, bis er steht, dann erneut versuchen.');return;}
   if(lastFrameSnapshot?.clipLevel==='critical'){showError('Frame ist übersteuert – Kalibrierung unbrauchbar. Abstand zur Lampe erhöhen oder Diffusor prüfen.');return;}
   if(currentSignalLevel==='critical'){showError('Signal zu schwach zum Kalibrieren (Rauschen dominiert). Unter hellem Licht kalibrieren.');return;}
   // v3.4.0: Referenzpunkt hinzufügen (1. Punkt => reine Steigung wie bisher,
@@ -1821,7 +1870,7 @@ function applyCalibration(){
   // v3.4.27: ISO und Belichtungszeit des Punkts mitspeichern. Aendert sich die
   // Rohwert-Basis noch einmal, laesst sich ein Punkt damit exakt umrechnen statt
   // nur als "alt" zu kennzeichnen - genau diese Angabe fehlte bei v3.4.22.
-  const pt={raw:currentRawPPFDUncalibrated,ref:refPPFD,iso:hardwareSettings?.iso??null,exp:hardwareSettings?.exposureTime??null};
+  const pt={raw:rawCal,ref:refPPFD,iso:hardwareSettings?.iso??null,exp:hardwareSettings?.exposureTime??null};
   let d=loadCalib2Data();
   // v3.4.24: Punkte aus dem alten ISO-Modell nicht mit einem neuen mischen -
   // die Gerade laege sonst zwischen zwei verschiedenen Rohwert-Skalen.
@@ -2109,7 +2158,7 @@ async function startCamera(){
     }
     kalman.r=hardwareSettings.constraintsApplied?2.5:8.0;
     kalman.reset(); // v3.4.6: dieselbe Methode wie revertToAutoExposure() - beide Pfade duerfen nicht auseinanderlaufen
-    settleTimer.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();acceptedStreak=0;
+    settleTimer.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();acceptedStreak=0;calibRawMedian.reset();
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
     canvasFailStreak=0; // v3.4.6: sonst startet eine neue Sitzung mit dem Reststand der alten
     currentSessionId=newSessionId(); // v3.4.8: neuer Aufbau => neue Gruppe (s. TRAINDATA_KEY)
@@ -2155,7 +2204,7 @@ function stopCamera(){
   ['hardwareRow','clippingRow','signalRow','uniformityRow','reliabilityRow','fpsRow','stepRow','debugExpRow'].forEach(id=>document.getElementById(id).style.display='none');
   document.getElementById('flickerWarning').style.display='none';
   document.getElementById('qualityStatus').style.display='none';
-  temporalStats.reset();ppfdMedian.reset();lastQuality=null;
+  temporalStats.reset();ppfdMedian.reset();lastQuality=null;calibRawMedian.reset();
   if(manualLightKey!=='AUTO'){
     document.getElementById('lightSourceVal').textContent=LIGHT_PROFILES[manualLightKey].name+' (manuell)';
     document.getElementById('spectralFactorVal').textContent='×'+LIGHT_PROFILES[manualLightKey].factor.toFixed(4);
@@ -2192,6 +2241,7 @@ function stopCamera(){
 
 document.getElementById('gainSlider').addEventListener('input',e=>{
   gainController.setGain(e.target.value);
+  calibRawMedian.reset(); // v3.4.27: der Regler steckt im Rohwert
   document.getElementById('gainValue').textContent=parseFloat(e.target.value).toFixed(2)+'×';
 });
 
@@ -2210,6 +2260,7 @@ document.getElementById('lightSourceSelect').addEventListener('change',e=>{
   // Profils landete unter dem neuen.
   profileSwitchPending=true;
   lastAiUpdate=0;
+  calibRawMedian.reset(); // v3.4.27: Rohwerte des alten Profils nicht in die Kalibrierung mitteln
   if(manualLightKey!=='AUTO'&&LIGHT_PROFILES[manualLightKey]){currentFactor=LIGHT_PROFILES[manualLightKey].factor;currentLightSourceName=manualLightKey;}
   try{localStorage.setItem(LIGHTSRC_KEY,manualLightKey);}catch(err){}
   loadCalib();
@@ -2307,7 +2358,7 @@ async function stepDownExposureManual(){
   // temporalStats haelt yMean_lin, das NICHT belichtungsnormiert ist - ein
   // gemischter Puffer taeuschte Instabilitaet vor (vgl. v3.4.6). ppfdMedian
   // haelt Werte aus der uebersteuerten Phase, die zu niedrig sind.
-  temporalStats.reset();ppfdMedian.reset();
+  temporalStats.reset();ppfdMedian.reset();calibRawMedian.reset();
   // v3.4.16: Hinweis "Signal schwach nach Belichtungskorrektur" fuer diese
   // Stufe scharf schalten (s. lowSignalAfterStep).
   clipSteppedDown=true;lowAfterStepFrames=0;lowAfterStepHintShown=false;
@@ -2352,7 +2403,7 @@ async function revertToAutoExposure(reason){
   // Werte aus der alten Messkette.
   kalman.reset();
   temporalStats.reset();
-  ppfdMedian.reset();acceptedStreak=0;
+  ppfdMedian.reset();acceptedStreak=0;calibRawMedian.reset();
   lastQuality=null;lastUncertainty=null;
   settleTimer.reset();
   wbManual=false;
@@ -2381,6 +2432,9 @@ function processLoop(timestamp){
     document.getElementById('stepVal').textContent=pixelStep+'×';
     document.getElementById('uniformityVal').textContent=lastUniformityCV===null?'–':(lastUniformityCV*100).toFixed(1)+' %';
   }
+  // v3.4.27: "Aktueller Rohwert" im offenen Kalibrier-Dialog mitfuehren. Bisher
+  // stand dort der Wert vom Oeffnen, kalibriert wurde auf den vom Klick.
+  if(frameCount%10===0&&document.getElementById('calibModal').classList.contains('open')) updateCalibRawDisplay();
 
   // v3.3.11 FIX (Review): Während measureBlackLevel() läuft, würden sonst
   // die gezielt abgedeckten (künstlich dunklen) Frames in Kalman,
@@ -2585,6 +2639,8 @@ function processLoop(timestamp){
       document.getElementById('confVal').textContent='manuell';
     }else{
       const lightResult=lightDetector.detect(avgR_gamma,avgG_gamma,avgB_gamma);
+      // v3.4.27: Wechselt die Auto-Erkennung das Profil, aendert sich der Rohwert.
+      if(lightResult.id!==currentLightSourceName||lightResult.factor!==currentFactor) calibRawMedian.reset();
       currentFactor=lightResult.factor;currentLightSourceName=lightResult.id;
       document.getElementById('lightSourceVal').textContent=lightResult.name;
       document.getElementById('spectralFactorVal').textContent='×'+currentFactor.toFixed(4);
@@ -2721,6 +2777,9 @@ function processLoop(timestamp){
   // Werte waeren um den Stufenfaktor falsch und duerfen nicht in den Kalman.
   const holdKalman=isClipping||!qGateOpen||clipStepInProgress;
   acceptedStreak=holdKalman?0:acceptedStreak+1;
+  // v3.4.27: Kalibrier-Fenster (s. calibRawMedian) - nur akzeptierte Frames,
+  // ein gehaltener Frame verwirft es.
+  if(holdKalman) calibRawMedian.reset(); else calibRawMedian.push(currentRawPPFDUncalibrated);
   const seedPending=!kalman.seeded&&acceptedStreak<MEDIAN_WINDOW; // s. acceptedStreak
   const displayPPFD=settleStatus.isWarmedUp?((holdKalman||seedPending)?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
   const state=appFSM.update(settleStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);

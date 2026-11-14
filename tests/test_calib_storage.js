@@ -37,7 +37,9 @@ const api=new Function('localStorage','document','window','navigator','console',
     PROC_W,PROC_H,
     applyCalibration,saveTrainPoint,settleTimer,SETTLE_WAIT_MSG,TRAINDATA_KEY,
     get isMeasuring(){return isMeasuring;},set isMeasuring(v){isMeasuring=v;},
-    set currentRawPPFDUncalibrated(v){currentRawPPFDUncalibrated=v;},
+    // v3.4.27: kalibriert wird auf den Median des Kalibrier-Fensters - der Setter
+      // stellt die Lage "Rohwert steht seit einem vollen Fenster" her.
+      set currentRawPPFDUncalibrated(v){currentRawPPFDUncalibrated=v;calibRawMedian.reset();for(let i=0;i<CALIB_RAW_WINDOW;i++) calibRawMedian.push(v);},
     set lastFrameSnapshot(v){lastFrameSnapshot=v;},
     get toastLast(){return toastLast;},set toastLast(v){toastLast=v;},
     get clipStepInProgress(){return clipStepInProgress;},set clipStepInProgress(v){clipStepInProgress=v;},

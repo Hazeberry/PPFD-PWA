@@ -76,7 +76,9 @@ function neueApp() {
       get calibP1(){return calibP1;}, get calibP2(){return calibP2;}, get calibFit(){return calibFit;},
       get manualLightKey(){return manualLightKey;}, set manualLightKey(v){manualLightKey=v;},
       get cameraFacing(){return cameraFacing;}, set cameraFacing(v){cameraFacing=v;},
-      set currentRawPPFDUncalibrated(v){currentRawPPFDUncalibrated=v;},
+      // v3.4.27: kalibriert wird auf den Median des Kalibrier-Fensters - der Setter
+      // stellt die Lage "Rohwert steht seit einem vollen Fenster" her.
+      set currentRawPPFDUncalibrated(v){currentRawPPFDUncalibrated=v;calibRawMedian.reset();for(let i=0;i<CALIB_RAW_WINDOW;i++) calibRawMedian.push(v);},
       set currentSignalLevel(v){currentSignalLevel=v;},
       set lastFrameSnapshot(v){lastFrameSnapshot=v;},
       loadCalib, applyCalibration, resetCalibration, computeCalib2,
