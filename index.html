@@ -864,7 +864,13 @@ function calibRangeStatus(raw,p1,p2,calib){
   if(stuetzen.length===0) return{state:'unknown',lo:null,hi:null,zeroAt:0};
   const lo=Math.min(...stuetzen),hi=Math.max(...stuetzen);
   const zeroAt=calib.offset<0?-calib.offset/calib.slope:0;
-  if(!Number.isFinite(raw)||raw<=0) return{state:'ok',lo:lo,hi:hi,zeroAt:zeroAt};
+  // v3.4.27 FIX: Rohwert exakt 0 ist ein MESSWERT (schwarzer Frame), kein
+  // unbrauchbarer. Bisher fiel er hier als 'ok' heraus: bei negativem Offset
+  // stand die Unsicherheitszeile auf "nahe Kalibrier-Nullpunkt", waehrend die
+  // Null-Zonen-Warnung fehlte und der Export 'ok' trug - bei Rohwert 0,2
+  // erschien sie dann. Derselbe Randfall wie in affineUncertaintyGain (v3.4.25).
+  // Unbrauchbar bleiben nur negative und nicht-endliche Werte.
+  if(!Number.isFinite(raw)||raw<0) return{state:'ok',lo:lo,hi:hi,zeroAt:zeroAt};
   // Null-Zone zuerst: sie ist der schwerwiegendere Befund und liegt per
   // Konstruktion immer unterhalb des Bereichs.
   if(zeroAt>0&&raw<=zeroAt) return{state:'zero-zone',lo:lo,hi:hi,zeroAt:zeroAt};
@@ -1760,15 +1766,26 @@ function closeCalibModal(){document.getElementById('calibModal').classList.remov
 // App selbst noch nicht fuer messbar haelt, durfte man bisher kalibrieren,
 // und die Kalibrierung blieb dauerhaft.
 const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert angezeigt wird.';
+const PROFILE_SWITCH_WAIT_MSG='Lichtprofil wurde gerade gewechselt – einen Moment warten, bis der Messwert neu berechnet ist.';
 // v3.4.27: s. exposureStatus(). Das README riet schon bisher davon ab, in diesem
 // Zustand zu kalibrieren oder Trainingspunkte zu speichern - verhindert hat es nichts.
+// v3.4.27: Der Software-Gain-Regler ("Manueller Korrekturfaktor") wird in den
+// Rohwert einmultipliziert - und damit in jeden Kalibrierpunkt. Die
+// Kalibrierung ist dauerhaft, der Regler nicht: jeder Kamerastart setzt ihn auf
+// 1,00x zurueck. Wer bei 2,00x auf 100 kalibrierte, las nach dem Neustart am
+// selben Licht 50 - weiterhin als "kalibriert", mit unveraenderter
+// Unsicherheit. Trainingspunkte trugen den Faktor ebenso im Rohwert.
+// Deshalb: beides nur bei neutralem Regler.
+function softwareGainActive(){return useSoftwareGain&&Math.abs(gainController.gain-1)>1e-9;}
+const gainNeutralMsg=()=>'Software-Gain steht auf '+gainController.gain.toFixed(2)+'× – für Kalibrierung und Trainingspunkte erst auf Neutral (1,00×) stellen. Der Regler steckt sonst im gespeicherten Wert und springt beim nächsten Kamerastart zurück.';
 const EXPOSURE_PLACEHOLDER_MSG='Die Kamera regelt die Belichtung selbst und meldet sie nicht – der angezeigte Wert ist nur ein Platzhalter. Kalibrieren und Trainingspunkte sind damit nicht möglich.';
 function applyCalibration(){
   if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
   if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. Punkt 4 bei stepDownExposureManual
   if(exposureStatus(hardwareSettings).placeholder){showError(EXPOSURE_PLACEHOLDER_MSG);return;} // v3.4.27
+  if(softwareGainActive()){showError(gainNeutralMsg());return;} // v3.4.27
   // v3.4.22: Profilwechsel noch nicht eingerechnet -> Rohwert gehoert zum alten Profil.
-  if(profileSwitchPending){showError('Lichtprofil wurde gerade gewechselt – einen Moment warten, bis der Messwert neu berechnet ist.');return;}
+  if(profileSwitchPending){showError(PROFILE_SWITCH_WAIT_MSG);return;}
   // v3.4.22: dasselbe Q-Gate wie die Anzeige. Bei geschlossenem Gate haelt die
   // Anzeige den letzten brauchbaren Wert - der aktuelle Rohwert gilt als nicht
   // repraesentativ und darf keine dauerhafte Kalibrierung begruenden.
@@ -1886,6 +1903,10 @@ function saveTrainPoint(){
   if(!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;} // v3.4.18, s. applyCalibration
   if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. applyCalibration
   if(exposureStatus(hardwareSettings).placeholder){showError(EXPOSURE_PLACEHOLDER_MSG);return;} // v3.4.27, s. applyCalibration
+  if(softwareGainActive()){showError(gainNeutralMsg());return;} // v3.4.27, s. applyCalibration
+  // v3.4.27: lastFrameSnapshot stammt noch aus dem Frame VOR dem Profilwechsel
+  // (anderes Profil, anderer Rohwert) - derselbe Moment, den applyCalibration sperrt.
+  if(profileSwitchPending){showError(PROFILE_SWITCH_WAIT_MSG);return;}
   const device=(document.getElementById('trainDevice').value||'').trim();
   if(!device){showError('Gerät/Handy-Modell angeben – wichtig, wenn mehrere Personen Daten beisteuern (unterschiedliche Kamerasensoren!).');return;}
   const ref=parseFloat(document.getElementById('trainRefPPFD').value);

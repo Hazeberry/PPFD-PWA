@@ -267,8 +267,17 @@ t('Ohne Kalibrierung und ohne Stuetzstellen wird nichts behauptet', () => {
   assert.strictEqual(P.calibRangeStatus(500, { raw: 0 }, null, FIT1).state, 'unknown');
 });
 
+t('REGRESSION (v3.4.27): Rohwert exakt 0 ist ein Messwert - Null-Zone bzw. unter dem Bereich', () => {
+  // Schwarzer Frame. Mit negativem Offset klemmt die Anzeige auf 0: Null-Zone.
+  assert.strictEqual(P.calibRangeStatus(0, P1, P2, FIT2).state, 'zero-zone');
+  // Ohne Offset gibt es keine Null-Zone, 0 liegt aber unter jeder Stuetzstelle.
+  assert.strictEqual(P.calibRangeStatus(0, { raw: 400, ref: 500 }, null, FIT1).state, 'below');
+  // Stetigkeit: 0 und ein winziger Rohwert bekommen dieselbe Auskunft.
+  assert.strictEqual(P.calibRangeStatus(0, P1, P2, FIT2).state, P.calibRangeStatus(1e-9, P1, P2, FIT2).state);
+});
+
 t('Unbrauchbare Rohwerte kippen die Auskunft nicht', () => {
-  for (const raw of [0, -5, NaN, Infinity]) {
+  for (const raw of [-5, NaN, Infinity]) {
     const r = P.calibRangeStatus(raw, P1, P2, FIT2);
     assert.strictEqual(r.state, 'ok', 'raw=' + raw + ' -> ' + r.state);
     assert.ok(Number.isFinite(r.lo) && Number.isFinite(r.hi), 'Spanne muss trotzdem stimmen');
@@ -1455,6 +1464,20 @@ t('Verdrahtung: Sperre in Kalibrierung UND Trainingspunkt, Vermerk im Datenpunkt
   assert.ok(/belichtungGemeldet:hardwareSettings\?\(hardwareSettings\.exposureReported\?1:0\):null/.test(html));
   assert.ok(/'belichtungGemeldet','isoGemeldet'/.test(html), 'Spalten fehlen im Export');
   assert.ok(/if\(expStat\.placeholder\) lastUncertainty=markUnquantifiable\(lastUncertainty,'exposure'\);/.test(html));
+});
+
+console.log('== v3.4.27: Software-Gain und Profilwechsel bei Kalibrierung/Trainingspunkt ==');
+t('Verdrahtung: Software-Gain ungleich 1,00x sperrt Kalibrierung und Trainingspunkt', () => {
+  assert.ok(/function softwareGainActive\(\)\{return useSoftwareGain&&Math\.abs\(gainController\.gain-1\)>1e-9;\}/.test(html));
+  for (const fn of ['applyCalibration', 'saveTrainPoint']) {
+    const i = html.indexOf('function ' + fn + '(');
+    assert.ok(/if\(softwareGainActive\(\)\)\{showError\(gainNeutralMsg\(\)\);return;\}/.test(html.slice(i, i + 1500)), fn + '() prueft den Regler nicht');
+  }
+});
+t('Verdrahtung: Trainingspunkt ist nach einem Profilwechsel gesperrt wie die Kalibrierung', () => {
+  const i = html.indexOf('function saveTrainPoint(');
+  const kopf = html.slice(i, html.indexOf('const device=', i));
+  assert.ok(/if\(profileSwitchPending\)\{showError\(PROFILE_SWITCH_WAIT_MSG\);return;\}/.test(kopf));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
