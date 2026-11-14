@@ -756,9 +756,12 @@ function affineUncertaintyGain(raw,slope,offset){
   return Math.max(1,lin/res);
 }
 function propagateAffineUncertainty(u,raw,slope,offset){
+  // v3.4.27: schon als nicht quantifizierbar markiert (Platzhalter-Wert) -> nichts
+  // skalieren (null*g waere 0, also eine scheinbar perfekte Unsicherheit).
+  if(u.unquantifiable) return u;
   const g=affineUncertaintyGain(raw,slope,offset);
   if(g===1) return Object.assign({},u,{affineGain:1,unquantifiable:false});
-  if(g>AFFINE_GAIN_LIMIT) return Object.assign({},u,{uRel:null,uSys:null,uRand:null,affineGain:Number.isFinite(g)?g:null,unquantifiable:true});
+  if(g>AFFINE_GAIN_LIMIT) return Object.assign(markUnquantifiable(u,'zero-zone'),{affineGain:Number.isFinite(g)?g:null});
   return Object.assign({},u,{uRel:u.uRel*g,uSys:u.uSys*g,uRand:u.uRand*g,affineGain:g,unquantifiable:false});
 }
 
@@ -888,6 +891,32 @@ function readLiveExposure(set,prev,unit){
     exposureReported:expOk,
     isoReported:isoOk
   };
+}
+// v3.4.27: Was meldet die Kamera NICHT - und ist der Wert damit noch eine
+// Messung? Die Formel teilt durch ISO x Belichtungszeit.
+//   - Manuell-Modus (constraintsApplied): Die Belichtung steht fest. Fehlt eine
+//     Meldung, rechnet die Formel mit dem angeforderten Wert; ein Fehler darin
+//     ist ein konstanter Skalenfaktor, den die Kalibrierung auffaengt. Hinweis
+//     ja, Messung bleibt Messung.
+//   - Auto-Belichtung (Software-Fallback): Die Kamera haelt die Bildhelligkeit
+//     selbst konstant. Fehlt die Meldung, kann die Formel das nicht
+//     herausrechnen - der Wert haengt dann kaum noch vom Licht ab. Das ist kein
+//     groesserer Messfehler, sondern KEINE Messung: placeholder=true.
+// Bis v3.4.26 gab es dafuer nur den Texthinweis in der Unsicherheitszeile; die
+// grosse Zahl sah aus wie ein Messwert, die Unsicherheit stand bei +-73 % (bzw.
+// +-22 % nach einer - wirkungslosen - Kalibrierung), Kalibrieren und
+// Trainingspunkte waren moeglich, und der Export trug keinen Vermerk.
+function exposureStatus(hs){
+  if(!hs) return{missing:[],placeholder:false};
+  const missing=[];
+  if(!hs.exposureReported) missing.push('Belichtung');
+  if(!hs.isoReported) missing.push('ISO');
+  return{missing:missing,placeholder:missing.length>0&&!hs.constraintsApplied};
+}
+// Unsicherheit als "nicht quantifizierbar" kennzeichnen (uRel/uSys/uRand=null).
+// reason: 'exposure' (Platzhalter-Wert) oder 'zero-zone' (Kalibrier-Nullpunkt).
+function markUnquantifiable(u,reason){
+  return Object.assign({},u,{uRel:null,uSys:null,uRand:null,unquantifiable:true,unquantifiableReason:reason});
 }
 // v3.4.21: Warum wird der angezeigte Wert gerade NICHT aktualisiert? Bei
 // Uebersteuerung zeigt die App "---". Wird der Kalman dagegen vom Q-Gate oder
@@ -1731,9 +1760,13 @@ function closeCalibModal(){document.getElementById('calibModal').classList.remov
 // App selbst noch nicht fuer messbar haelt, durfte man bisher kalibrieren,
 // und die Kalibrierung blieb dauerhaft.
 const SETTLE_WAIT_MSG='Kamera stellt sich noch ein – warten, bis der Messwert angezeigt wird.';
+// v3.4.27: s. exposureStatus(). Das README riet schon bisher davon ab, in diesem
+// Zustand zu kalibrieren oder Trainingspunkte zu speichern - verhindert hat es nichts.
+const EXPOSURE_PLACEHOLDER_MSG='Die Kamera regelt die Belichtung selbst und meldet sie nicht – der angezeigte Wert ist nur ein Platzhalter. Kalibrieren und Trainingspunkte sind damit nicht möglich.';
 function applyCalibration(){
   if(isMeasuring&&!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;}
   if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. Punkt 4 bei stepDownExposureManual
+  if(exposureStatus(hardwareSettings).placeholder){showError(EXPOSURE_PLACEHOLDER_MSG);return;} // v3.4.27
   // v3.4.22: Profilwechsel noch nicht eingerechnet -> Rohwert gehoert zum alten Profil.
   if(profileSwitchPending){showError('Lichtprofil wurde gerade gewechselt – einen Moment warten, bis der Messwert neu berechnet ist.');return;}
   // v3.4.22: dasselbe Q-Gate wie die Anzeige. Bei geschlossenem Gate haelt die
@@ -1852,6 +1885,7 @@ function saveTrainPoint(){
   if(!isMeasuring||!lastFrameSnapshot){showError('Erst Messung starten – Datenpunkt braucht einen Live-Frame.');return;}
   if(!settleTimer.settled){showError(SETTLE_WAIT_MSG);return;} // v3.4.18, s. applyCalibration
   if(clipStepInProgress){showError(CLIP_STEP_WAIT_MSG);return;} // v3.4.20, s. applyCalibration
+  if(exposureStatus(hardwareSettings).placeholder){showError(EXPOSURE_PLACEHOLDER_MSG);return;} // v3.4.27, s. applyCalibration
   const device=(document.getElementById('trainDevice').value||'').trim();
   if(!device){showError('Gerät/Handy-Modell angeben – wichtig, wenn mehrere Personen Daten beisteuern (unterschiedliche Kamerasensoren!).');return;}
   const ref=parseFloat(document.getElementById('trainRefPPFD').value);
@@ -1881,7 +1915,7 @@ function exportTrainCSV(){
   // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
   // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
   // "Gruppe unbekannt", nicht "eigene Gruppe".
-  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','isoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','belichtungGemeldet','isoGemeldet','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','isoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -2438,6 +2472,9 @@ function processLoop(timestamp){
     temporalCV:temporalStats.cv(),
     yMeanLin:yMean_lin
   });
+  // v3.4.27: Platzhalter-Wert (Auto-Belichtung ohne Meldung) -> keine Prozentzahl.
+  const expStat=exposureStatus(hardwareSettings);
+  if(expStat.placeholder) lastUncertainty=markUnquantifiable(lastUncertainty,'exposure');
 
   if(clipStatus.level==='critical'){
     clipCriticalFrames++;
@@ -2563,6 +2600,11 @@ function processLoop(timestamp){
     gainMultiplier:gainMultiplier,
     hardwareMode:hardwareSettings?.constraintsApplied?'manuell':'software',
     fallbackMode:hardwareSettings?.fallbackMode||'',
+    // v3.4.27: Ob Belichtungszeit/ISO von der Kamera GEMELDET wurden (1) oder
+    // die Formel mit einem angenommenen Wert rechnet (0). exposureTime und iso
+    // oben sehen in beiden Faellen gleich plausibel aus.
+    belichtungGemeldet:hardwareSettings?(hardwareSettings.exposureReported?1:0):null,
+    isoGemeldet:hardwareSettings?(hardwareSettings.isoReported?1:0):null,
     rawPPFDUncalibrated:currentRawPPFDUncalibrated,
     lichtquelle:currentLightSourceName,
     clipLevel:clipStatus.level,
@@ -2626,7 +2668,8 @@ function processLoop(timestamp){
   // ausgewertet) - die Formel teilt durch ISO*Belichtungszeit.
   // v3.4.26 FIX: gilt in JEDEM Modus. Vorher war der Manuell-Modus pauschal
   // ausgenommen, obwohl auch dort ein Geraet Belichtung/ISO nicht melden kann.
-  const exposureGuessed=!!hardwareSettings&&!(hardwareSettings.exposureReported&&hardwareSettings.isoReported);
+  // v3.4.27: als exposureStatus() ausgelagert (expStat, weiter oben berechnet) -
+  // der Hinweis nennt jetzt, WAS fehlt, und unterscheidet Hinweis von Platzhalter.
   // v3.4.27: Altkalibrierung nur melden, wo sie sich auswirkt (s. isoModelShift).
   const isoShift=(calibIsoLegacy&&customCalibFactor!==null)?isoModelShift(effectiveISO):1;
   const isoLegacyAffects=Math.abs(isoShift-1)>ISO_SHIFT_NOTICE;
@@ -2659,14 +2702,19 @@ function processLoop(timestamp){
     // Pruefbar ist es erst mit gepoolten CSV-Daten (README, Unsicherheitsbudget).
     const uQuantifiable=lastUncertainty.uRel!==null&&Number.isFinite(lastUncertainty.uRel);
     const uExp=uQuantifiable?lastUncertainty.uRel*2:null;
+    const fehlt=expStat.missing.join('/');
+    const uText=uQuantifiable?'Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)'
+      :(lastUncertainty.unquantifiableReason==='exposure'
+        ?'Keine Messung: Kamera regelt selbst nach und meldet '+fehlt+' nicht – Wert ist nur ein Platzhalter'
+        :'Unsicherheit nicht zuverlässig quantifizierbar (nahe Kalibrier-Nullpunkt)');
     // v3.4.10: Geltungsbereich der Kalibrierung mit anzeigen. Bewusst in
     // dieser Zeile - sie beantwortet die Frage "wie sehr kann ich der Zahl
     // trauen", und "ausserhalb des kalibrierten Bereichs" gehoert genau dorthin.
-    document.getElementById('uncertaintyVal').textContent=(uQuantifiable?'Unsicherheit ±'+(uExp*100).toFixed(0)+' % (k=2)':'Unsicherheit nicht zuverlässig quantifizierbar (nahe Kalibrier-Nullpunkt)')
+    document.getElementById('uncertaintyVal').textContent=uText
       +(customCalibFactor===null?' · unkalibriert':'')
       +(isoLegacyAffects?' · Altkalibrierung: bei ISO '+Math.round(effectiveISO)+' '+pctSigned(isoShift)+' (neu kalibrieren)':'')
       +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
-      +(exposureGuessed?' · Belichtung/ISO nicht gemeldet':'');
+      +(fehlt&&!expStat.placeholder?' · '+fehlt+' nicht gemeldet':'');
     setCalibRangeLine(calibRangeSuffix(lastRange));
   }else{
     document.getElementById('dliVal').textContent='DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
@@ -2703,9 +2751,15 @@ function processLoop(timestamp){
   // Zahl und Abzeichen statt Zonenname. Die Farbe bleibt die des Zustands.
   const held=heldReason({warmedUp:settleStatus.isWarmedUp,isClipping:isClipping,stepInProgress:clipStepInProgress,
     qGateOpen:qGateOpen,gateWeakest:lastQuality?.gateWeakest});
-  ppfdEl.style.opacity=held?'0.4':'';
+  // v3.4.27: Ein Platzhalter-Wert (s. exposureStatus) wird genauso kenntlich
+  // gemacht wie ein gehaltener - sonst sieht er aus wie ein Messwert.
+  const placeholderShown=!held&&expStat.placeholder&&settleStatus.isWarmedUp&&!isClipping;
+  ppfdEl.style.opacity=(held||placeholderShown)?'0.4':'';
   if(held){
     badgeEl.textContent=held.kind==='step'?'Belichtung stellt um':'Gehalten: '+(Q_WEAKEST_LABELS[held.weakest]||'Messgüte');
+    badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
+  }else if(placeholderShown){
+    badgeEl.textContent='Nur Platzhalter – keine Messung';
     badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
   }
 
