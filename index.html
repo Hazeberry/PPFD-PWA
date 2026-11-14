@@ -380,8 +380,20 @@ function analyzeFrame(data,width,height,pixelStep,lut,blackLevelLin){
 }
 
 class AdaptivePPFDKalmanFilter {
-  constructor(q=0.02,r=2.50,p=1.0,x=0.0){this.q=q;this.r=r;this.p=p;this.x=x;this.lastMeasurement=x;this.lastInnovation=0;}
+  constructor(q=0.02,r=2.50,p=1.0,x=0.0){this.q=q;this.r=r;this.p=p;this.x=x;this.lastMeasurement=x;this.lastInnovation=0;this.seeded=false;}
   update(measurement){
+    // v3.4.27 FIX: Der erste Messwert nach Konstruktion bzw. reset() SETZT den
+    // Zustand, statt ihn von 0 aus anzunaehern. Vorher begann die Anzeige nach
+    // jedem Einschwingen bei einem Bruchteil des wahren Werts und lief erst
+    // ueber 1-2 s hoch (nachgerechnet am echten Skript, wahrer Wert 51,3:
+    // Software-Modus 5,8 -> 11 -> 14 -> ... 50 nach 60 Frames; Manuell 15 -> 23
+    // -> 29 -> ... 50 nach 30 Frames) - nicht abgedunkelt, mit Zonen-Abzeichen,
+    // also als scheinbar gueltiger Live-Wert. v3.4.6 hatte genau diesen Effekt
+    // fuer den ALTEN Zustand behoben ("erster Wert 589 statt 200") und dabei
+    // den Startwert 0 eingefuehrt, der denselben Fehler in die andere Richtung
+    // macht. Der Aufrufer fuettert den Median der letzten Frames - der erste
+    // Wert ist also kein Einzelausreisser.
+    if(!this.seeded){this.seeded=true;this.x=measurement;this.lastMeasurement=measurement;this.lastInnovation=0;return this.x;}
     const delta=Math.abs(measurement-this.lastMeasurement);
     const qAdaptive=delta>500?this.q*10:this.q;
     this.p+=qAdaptive;
@@ -398,7 +410,7 @@ class AdaptivePPFDKalmanFilter {
   // die Rauschparameter q/r: die setzt der Aufrufer je nach Betriebsart
   // (r=2.5 bei Hardware-Lock, r=8.0 bei Software-Gain), ein reset() darf sie
   // nicht stillschweigend auf die Konstruktor-Werte zuruecksetzen.
-  reset(x=0){this.p=1.0;this.x=x;this.lastMeasurement=x;this.lastInnovation=0;}
+  reset(x=0){this.p=1.0;this.x=x;this.lastMeasurement=x;this.lastInnovation=0;this.seeded=false;}
 }
 
 class LightSourceDetector {
@@ -1233,6 +1245,14 @@ const temporalStats=new TemporalStats(30);
 // Bewusst getrennt von temporalStats - das haelt yMean_lin fuer den CV, hier
 // laufen kalibrierte PPFD-Werte durch.
 const ppfdMedian=new RollingMedian(MEDIAN_WINDOW);
+// v3.4.27: Anzahl aufeinanderfolgender NICHT gehaltener Frames. Der Median wird
+// bewusst auch waehrend eines Halts weitergefuettert (s. processLoop) - sein
+// Fenster enthaelt direkt nach dem Halt also noch Frames, die das Gate gerade
+// verworfen hat. Fuer den laufenden Filter ist das ein kleiner Effekt; den
+// ERSTEN Wert (s. AdaptivePPFDKalmanFilter.update) wuerde es dagegen vollstaendig
+// bestimmen. Gesetzt wird der Filter deshalb erst, wenn das Median-Fenster nur
+// noch akzeptierte Frames enthaelt.
+let acceptedStreak=0;
 let lastQuality=null;
 let lastUncertainty=null;
 const Q_STATUS_LABELS={
@@ -2089,7 +2109,7 @@ async function startCamera(){
     }
     kalman.r=hardwareSettings.constraintsApplied?2.5:8.0;
     kalman.reset(); // v3.4.6: dieselbe Methode wie revertToAutoExposure() - beide Pfade duerfen nicht auseinanderlaufen
-    settleTimer.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();
+    settleTimer.reset();gainController.reset();appFSM.reset();temporalStats.reset();ppfdMedian.reset();acceptedStreak=0;
     frameCount=0;lastFrameTime=0;smoothedFps=hardwareSettings.frameRate||30;
     canvasFailStreak=0; // v3.4.6: sonst startet eine neue Sitzung mit dem Reststand der alten
     currentSessionId=newSessionId(); // v3.4.8: neuer Aufbau => neue Gruppe (s. TRAINDATA_KEY)
@@ -2332,7 +2352,7 @@ async function revertToAutoExposure(reason){
   // Werte aus der alten Messkette.
   kalman.reset();
   temporalStats.reset();
-  ppfdMedian.reset();
+  ppfdMedian.reset();acceptedStreak=0;
   lastQuality=null;lastUncertainty=null;
   settleTimer.reset();
   wbManual=false;
@@ -2700,15 +2720,21 @@ function processLoop(timestamp){
   // neuer Belichtung an, die Formel teilt aber noch durch die alte - diese
   // Werte waeren um den Stufenfaktor falsch und duerfen nicht in den Kalman.
   const holdKalman=isClipping||!qGateOpen||clipStepInProgress;
-  const displayPPFD=settleStatus.isWarmedUp?(holdKalman?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
+  acceptedStreak=holdKalman?0:acceptedStreak+1;
+  const seedPending=!kalman.seeded&&acceptedStreak<MEDIAN_WINDOW; // s. acceptedStreak
+  const displayPPFD=settleStatus.isWarmedUp?((holdKalman||seedPending)?kalman.x:kalman.update(medianPPFD??rawPPFD)):0;
   const state=appFSM.update(settleStatus.isWarmedUp,lastFlickerResult.isFlickering,isClipping,smoothedFps,flickerResultFresh);
   flickerResultFresh=false; // verbraucht - bis zum naechsten 1-Hz-Block ruht der Flicker-Akkumulator
 
-  document.getElementById('ppfdVal').textContent=settleStatus.isWarmedUp?(isClipping?'———':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD))):'–––';
+  // v3.4.27: Wird der Kalman vom ersten Frame an gehalten (Q-Gate von Beginn an
+  // zu), gibt es noch keinen Messwert - kalman.x steht dann auf dem Startwert 0.
+  // Bisher erschien das als gehaltene "0.0", obwohl nie etwas gemessen wurde.
+  const hasValue=kalman.seeded;
+  document.getElementById('ppfdVal').textContent=settleStatus.isWarmedUp?(isClipping?'———':(!hasValue?'–––':(displayPPFD<10?displayPPFD.toFixed(1):Math.round(displayPPFD)))):'–––';
   if(settleStatus.isWarmedUp&&!isClipping){
     const dli12=(displayPPFD*12*3600/1e6).toFixed(1);
     const dli18=(displayPPFD*18*3600/1e6).toFixed(1);
-    document.getElementById('dliVal').textContent=`DLI 12h: ${dli12} · 18h: ${dli18} mol·m⁻²·d⁻¹`;
+    document.getElementById('dliVal').textContent=hasValue?`DLI 12h: ${dli12} · 18h: ${dli18} mol·m⁻²·d⁻¹`:'DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
     // v3.4.3 FIX: ERWEITERTE Unsicherheit (k=2, ~95%) anzeigen, nicht die
     // kombinierte Standardunsicherheit (k=1, ~68%). uRel ist per GUM eine
     // Standardunsicherheit; "±7 %" ohne Angabe des Erweiterungsfaktors liest

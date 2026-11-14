@@ -1480,5 +1480,44 @@ t('Verdrahtung: Trainingspunkt ist nach einem Profilwechsel gesperrt wie die Kal
   assert.ok(/if\(profileSwitchPending\)\{showError\(PROFILE_SWITCH_WAIT_MSG\);return;\}/.test(kopf));
 });
 
+console.log('== v3.4.27: Kalman startet beim ersten Messwert, nicht bei 0 ==');
+t('REGRESSION: erster Wert nach Konstruktion ist der Messwert selbst', () => {
+  for (const r of [2.5, 8.0]) {
+    const k = new P.AdaptivePPFDKalmanFilter(); k.r = r;
+    assert.strictEqual(k.update(600), 600, 'r=' + r + ': Anzeige begann nicht beim Messwert');
+    assert.strictEqual(k.innovation, 0);
+  }
+});
+t('REGRESSION: nach reset() ebenso - kein Hochlaufen von 0 (Kamerastart, Rueckfall auf Auto)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 300; i++) k.update(600);
+  k.r = 8.0; k.reset();
+  assert.strictEqual(k.seeded, false);
+  const erste = [k.update(200), k.update(200), k.update(200)];
+  assert.deepStrictEqual(erste, [200, 200, 200], 'Anzeige nach reset: ' + erste.map(v => v.toFixed(1)).join(', '));
+});
+t('Danach glaettet der Filter wie bisher (ein Ausreisser verschiebt x nur anteilig)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 100; i++) k.update(500);
+  const nach = k.update(1000);
+  assert.ok(nach > 500 && nach < 600, 'Ausreisser schlug durch: ' + nach.toFixed(1));
+});
+t('Sprungantwort bleibt unveraendert traege (Glaettung ist nicht abgeschaltet)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 100; i++) k.update(100);
+  let n = 0; while (Math.abs(k.update(200) - 200) > 5 && n < 500) n++;
+  assert.ok(n >= 5, 'Sprung in ' + n + ' Frames uebernommen - Filter glaettet nicht mehr');
+});
+t('Verdrahtung: gesetzt wird erst, wenn das Median-Fenster nur akzeptierte Frames enthaelt', () => {
+  assert.ok(/acceptedStreak=holdKalman\?0:acceptedStreak\+1;/.test(html));
+  assert.ok(/const seedPending=!kalman\.seeded&&acceptedStreak<MEDIAN_WINDOW;/.test(html));
+  assert.ok(/\(holdKalman\|\|seedPending\)\?kalman\.x:kalman\.update\(/.test(html));
+  assert.ok((html.match(/ppfdMedian\.reset\(\);acceptedStreak=0;/g) || []).length >= 2, 'Zaehler wird nicht mit dem Median zurueckgesetzt');
+});
+t('Verdrahtung: vor dem ersten gueltigen Wert keine Zahl (gehaltene 0.0 ohne Messung)', () => {
+  assert.ok(/const hasValue=kalman\.seeded;/.test(html));
+  assert.ok(/isClipping\?'———':\(!hasValue\?'–––':/.test(html), 'Anzeige zeigt vor dem ersten Messwert eine Zahl');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
