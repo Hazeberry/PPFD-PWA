@@ -33,6 +33,11 @@ jobs:
       - run: node --test tests/test_browser_support.js
 
   browser:
+    name: browser-series-${{ matrix.series }}
+    strategy:
+      fail-fast: false
+      matrix:
+        series: [1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -45,12 +50,12 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
         env:
-          BROWSER_TEST_REPEATS: ${{ inputs.repetitions || '1' }}
+          BROWSER_TEST_REPEATS: ${{ inputs.repetitions || '20' }}
       - name: Upload browser diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: browser-results-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-results-${{ github.run_id }}-${{ github.run_attempt }}-series-${{ matrix.series }}
           path: test-results/browser/
           if-no-files-found: warn
           retention-days: 7
