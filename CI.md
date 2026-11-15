@@ -99,12 +99,36 @@ npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-Die verbindliche Workflow-Datei ist `.github/workflows/test.yml`. Beide Jobs verwenden Node.js 22, `actions/checkout@v7` und `actions/setup-node@v7`, npm-Caching und ein Zeitlimit von zehn Minuten. Neue Läufe brechen ältere Läufe desselben PRs ab.
+Die verbindliche Workflow-Datei ist `.github/workflows/test.yml`. Beide Jobs verwenden Node.js 22, `actions/checkout@v7` und `actions/setup-node@v7`, npm-Caching. Der Node-Job hat zehn Minuten Zeitlimit, der Browser-Job wegen der optionalen Wiederholungen 45 Minuten. Neue Läufe brechen ältere Läufe desselben PRs ab. Manuelle Läufe haben eine eigene Concurrency-Gruppe und brechen PR-Läufe nicht ab.
 
-Der Browser-Test startet einen lokalen HTTP-Server und zwei getrennte Browser-Kontexte. Bei einem Fehler endet er mit einem Fehlercode und schreibt den Seiteninhalt ins Job-Log. Browser und Server werden anschließend geschlossen. Die ersten zehn numerischen Anzeigewerte werden erfasst; der erste muss innerhalb von 20 % ihres Medians liegen. Das prüft den Anzeigeanlauf, nicht die Messgenauigkeit.
+Der Browser-Test startet einen lokalen HTTP-Server und zwei getrennte Browser-Kontexte. Bei einem Fehler endet er mit einem Fehlercode und speichert Diagnose-Dateien. Browser und Server werden anschließend geschlossen. Die ersten zehn numerischen Anzeigewerte werden erfasst; der erste muss innerhalb von 20 % ihres Medians liegen. Das prüft den Anzeigeanlauf, nicht die Messgenauigkeit.
 
 ## 4. Prüfnachweis und Grenzen
 
 Die Node-Tests wurden bei der Einrichtung lokal erfolgreich ausgeführt (Node.js 24). Der lokale Browserlauf war durch die Ausführungsumgebung blockiert: Der Playwright-Browserdownload lieferte kein gültiges Archiv; der vorhandene Systembrowser durfte seinen Prozess-Socket nicht öffnen. Der maßgebliche Nachweis für Node.js 22 und den gepinnten Chromium-Browser ist deshalb der GitHub-Actions-Lauf im PR.
 
 Die Checks sind nicht automatisch als verpflichtender Branch-Schutz eingerichtet. Ein erfolgreicher Browser-Test ersetzt keine Prüfung mit einer echten Handykamera.
+
+## 5. Wiederholungen und Fehleraufzeichnungen
+
+Normale PR- und Push-Läufe führen jedes Kamera-Szenario einmal aus. Für einen getrennten Stabilitätslauf: **Actions → Tests → Run workflow → repetitions** wählen (1, 5, 10 oder 20; Vorgabe 10). Der Workflow mit diesen Eingaben muss dafür auf `main` liegen.
+
+Lokal geht derselbe Lauf mit:
+
+```bash
+BROWSER_TEST_REPEATS=10 npm run test:browser
+```
+
+Jedes Szenario erhält einen frischen Browserprozess und Kontext. Nach einem Fehlschlag laufen die übrigen Szenarien weiter; es gibt keine automatischen Wiederholungsversuche, die einen Fehler verdecken. Sobald ein Szenario fehlschlägt, endet der gesamte Lauf mit Exit-Code 1.
+
+Unter dem GitHub-Lauf steht das Artefakt `browser-results-<run-id>-<attempt>` sieben Tage bereit:
+
+- `summary.json`: Ergebnis, Dauer und Fehler jedes Szenarios, auch bei erfolgreichen Läufen.
+- Bei Fehlern je Szenario: `screenshot.png`, `trace.zip` und `diagnostics.json` mit Browsermeldungen, Seiteninhalt, ersten Anzeigewerten und ursprünglichem Fehler.
+- Bei einem Browserabsturz können Screenshot oder Trace fehlen. Diagnosefehler werden separat protokolliert; der ursprüngliche Testfehler bleibt erhalten. Bei Abbruch/Job-Timeout sind Aufzeichnungen nicht garantiert.
+
+Traces werden während des Tests aufgezeichnet, bei Erfolg verworfen. Einen heruntergeladenen Trace öffnet `npx playwright show-trace pfad/trace.zip`. Lokal liegen die Dateien unter `test-results/browser/`; der nächste Lauf ersetzt dieses Verzeichnis.
+
+Die ±20-%-Prüfung des Anzeigeanlaufs bleibt unverändert. Wiederholungen prüfen ihre Zuverlässigkeit mit dem bewegten Testbild; sie belegen keine physikalische Messgenauigkeit. Branch-Schutz bleibt unverändert.
+
+Validierung dieser Erweiterung: [GitHub-Lauf 43693076500](https://github.com/Hazeberry/PPFD-PWA/actions/runs/43693076500) hat zehn Durchläufe je Kamera-Szenario bestanden (20/20). Ein vorher absichtlich ausgelöster Fehler bestätigte Exit-Code 1, die Fortsetzung des zweiten Szenarios sowie Screenshot- und Trace-Erzeugung. Das ist ein erster Stabilitätsnachweis, keine Garantie gegen spätere Ausreißer.
