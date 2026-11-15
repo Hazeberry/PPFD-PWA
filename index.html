@@ -56,6 +56,8 @@
   .modal h3{font-family:var(--mono);font-size:14px;color:var(--green);margin-bottom:16px;text-transform:uppercase;letter-spacing:.1em}
   .calib-input-group{margin-bottom:16px}
   .calib-input-group label{display:block;font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em}
+  /* v3.4.28: Einheiten nicht in Grossbuchstaben - aus "µmol" wurde sonst "ΜMOL", gelesen als mmol (Faktor 1000). */
+  .unit{text-transform:none}
   .calib-input-group input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--text);font-family:var(--mono);font-size:16px}
   .calib-input-group input:focus{outline:none;border-color:var(--green)}
   .modal-actions{display:flex;gap:10px;margin-top:20px}
@@ -182,7 +184,7 @@
       <input type="text" id="trainDevice" placeholder="z.B. Samsung Galaxy A17 5G">
     </div>
     <div class="calib-input-group" style="margin-bottom:10px">
-      <label>Referenz-PPFD vom PAR-Meter (µmol·m⁻²·s⁻¹)</label>
+      <label>Referenz-PPFD vom PAR-Meter <span class="unit">(µmol·m⁻²·s⁻¹)</span></label>
       <input type="number" id="trainRefPPFD" placeholder="z.B. 450" step="1">
     </div>
     <div class="calib-input-group" style="margin-bottom:10px">
@@ -243,7 +245,7 @@
     <h3>🔧 PPFD-Kalibrierung</h3>
     <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">Referenz-PAR-Meter daneben halten und Wert eingeben um den Spektral-Faktor zu justieren. <strong>Optional:</strong> zweiten Punkt bei deutlich anderer Helligkeit setzen (Zwei-Punkt-Kalibrierung: gleicht Steigung und Offset an – eine gekrümmte Kennlinie des Sensors oder der Bildverarbeitung korrigiert sie nur näherungsweise zwischen den beiden Punkten).<br><br><strong>Mit genau dem Diffusor kalibrieren, mit dem du misst</strong> – empfohlen ist ein Kosinus-Korrektor, und auch der muss kalibriert werden. Nach einem Wechsel (Papier ↔ Kosinus-Korrektor, andere Halterung) erst <strong>Reset</strong>, dann neu kalibrieren.</p>
     <div class="calib-input-group">
-      <label>Referenz-PPFD (µmol·m⁻²·s⁻¹)</label>
+      <label>Referenz-PPFD <span class="unit">(µmol·m⁻²·s⁻¹)</span></label>
       <input type="number" id="refPPFD" placeholder="z.B. 450" step="1">
     </div>
     <div style="background:var(--bg);border-radius:8px;padding:12px;margin-bottom:16px">
@@ -251,6 +253,9 @@
       <div style="font-family:var(--mono);font-size:18px;color:var(--green)" id="currentRawVal">–––</div>
       <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:10px 0 4px">Aktiver Kalibrier-Faktor</div>
       <div style="font-family:var(--mono);font-size:14px;color:var(--blue)" id="activeCalibVal">–</div>
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:10px 0 4px">Kalibrierpunkte</div>
+      <div id="calibPointsList" style="font-family:var(--mono);font-size:12px;color:var(--text)">–</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.4">Ein neuer Punkt ersetzt Punkt 2. Einen veralteten Punkt einzeln löschen – „Reset“ löscht alle Profile dieser Kamera.</div>
     </div>
     <div class="modal-actions">
       <button class="modal-btn secondary" onclick="resetCalibration()">Reset</button>
@@ -1027,6 +1032,36 @@ function confirmManualExposure(o){
   const expMatch=Number.isFinite(o.liveExp)&&Number.isFinite(o.requestedExp)&&Math.abs(o.liveExp-o.requestedExp)<=2;
   return expMatch||!!o.rampVerified;
 }
+// v3.4.28: Schwarzwert und Kalibrierung. Der Schwarzwert wird von jedem Pixel
+// abgezogen, BEVOR der Rohwert entsteht - er ist Teil der Rohwert-Basis.
+// Wurde nach dem Kalibrieren ein neuer gemessen oder der alte geloescht, gilt
+// die Kalibrierung auf einer anderen Basis weiter. Liefert den Faktor, um den
+// die App jetzt anders liest als zum Zeitpunkt der Kalibrierung:
+//   heute:  Y       = Y_roh - bl_jetzt
+//   damals: Y + dBl = Y_roh - bl_damals,  dBl = bl_jetzt - bl_damals
+//   Faktor = Y / (Y + dBl)
+// Naeherung: mit der Y-gewichteten Helligkeit, nicht kanalweise mit den
+// PAR-Gewichten - fuer einen Hinweis reicht das. Ausschlaggebend ist der Punkt
+// mit der groessten Abweichung. Punkte ohne gespeicherten Schwarzwert (vor
+// v3.4.28) sind nicht beurteilbar -> 1. Bei Y+dBl <= 0 (Signal unter dem
+// alten Schwarzwert) -> Infinity: nicht bezifferbar.
+const BL_SHIFT_NOTICE=0.01; // ab 1 % Unterschied wird es in der Unsicherheitszeile gemeldet
+function blackLevelShift(points,blNow,yMeanLin){
+  let worst=1;
+  if(!Number.isFinite(blNow)||!Number.isFinite(yMeanLin)||yMeanLin<0) return 1;
+  for(const p of points||[]){
+    if(!p||!Number.isFinite(p.bl)) continue;
+    const dBl=blNow-p.bl;
+    if(dBl===0) continue;
+    const old=yMeanLin+dBl;
+    const f=old>0?yMeanLin/old:Infinity;
+    if(Math.abs(f-1)>Math.abs(worst-1)) worst=f;
+  }
+  return worst;
+}
+// Gleicher Schwarzwert? (fuer das Mischen von Kalibrierpunkten). Unterhalb
+// von 1e-6 linear ist der Unterschied reine Gleitkomma-Rundung aus dem Storage.
+function sameBlackLevel(a,b){return Number.isFinite(a)&&Number.isFinite(b)&&Math.abs(a-b)<=1e-6;}
 /* ===PURE-PIPELINE-END=== */
 
 class SoftwareGainController {
@@ -1162,6 +1197,10 @@ const CALIB_KEY='ppfd_calibFactor_v2';
 // Kamerawechsel, las ihn korrekt).
 const BLACKLEVEL_KEY='ppfd_blackLevel_v1';
 const BLACKLEVEL_RGB_KEY='ppfd_blackLevelRGB_v1';
+// v3.4.28: s. blackLevelShift. Bei hellem Licht ist der Effekt klein, bei
+// schwachem deutlich; die Unsicherheitszeile nennt die Groesse, sobald er 1 %
+// uebersteigt.
+const BL_CALIB_MSG='Achtung: Die aktive Kalibrierung wurde mit dem vorherigen Schwarzwert erhoben. Bei schwachem Licht verschieben sich die Werte – neu kalibrieren.';
 // v3.4.0: Zwei-Punkt-Kalibrierung. Neuer Storage (JSON {p1,p2} pro Kamera);
 // der Legacy-Faktor (CALIB_KEY) bleibt als reine Steigung lesbar und wird
 // beim ersten Speichern eines neuen Punktes ersetzt. customCalibFactor
@@ -1313,6 +1352,16 @@ function calibRawValue(){return calibRawMedian.buf.length>=CALIB_RAW_WINDOW?cali
 // weit: eine flackernde Lampe soll kalibrierbar bleiben, dafuer ist der Median da.
 const CALIB_RAW_MAX_SPREAD=0.20;
 const CALIB_RAW_WAIT_MSG='Messwert wird noch gemittelt – etwa eine Sekunde ruhig halten, dann erneut versuchen.';
+// v3.4.28: Dieselbe Pruefung fuer Kalibrierung UND Trainingspunkt (vorher nur
+// Kalibrierung, Trainingspunkte blieben Einzelbilder - HANDOFF Punkt 7).
+// Liefert {raw} oder {error} mit der Meldung fuer den Nutzer.
+function calibRawCheck(){
+  const raw=calibRawValue();
+  if(raw===null) return{error:CALIB_RAW_WAIT_MSG};
+  const sp=calibRawMedian.spread();
+  if(sp!==null&&sp>CALIB_RAW_MAX_SPREAD) return{error:'Messwert schwankt noch (Spanne '+(sp*100).toFixed(0)+' % in der letzten Sekunde) – ruhig halten, bis er steht, dann erneut versuchen.'};
+  return{raw:raw};
+}
 function updateCalibRawDisplay(){
   const el=document.getElementById('currentRawVal');
   if(!el) return;
@@ -1548,6 +1597,7 @@ async function measureBlackLevel(){
       localStorage.setItem(BLACKLEVEL_KEY+'_'+startFacing,blackLevelLin); // Legacy-Key (Y)
     }catch(e){}
     showError('Schwarzwert gemessen: '+blackLevelLin.toFixed(5)+' (linear, je Kanal gespeichert).');
+    if(customCalibFactor!==null) showError(BL_CALIB_MSG); // v3.4.28
     updateBlackLevelNote();
     playPing();
   }finally{
@@ -1591,6 +1641,7 @@ function resetBlackLevel(){
   calibRawMedian.reset(); // v3.4.27: s. measureBlackLevel
   try{localStorage.removeItem(BLACKLEVEL_KEY+'_'+cameraFacing);localStorage.removeItem(BLACKLEVEL_RGB_KEY+'_'+cameraFacing);}catch(e){}
   showError('Schwarzwert-Referenz zurückgesetzt (0, keine Subtraktion).');
+  if(customCalibFactor!==null) showError(BL_CALIB_MSG); // v3.4.28
   updateBlackLevelNote();
 }
 
@@ -1714,7 +1765,7 @@ async function tuneExposure(track,cap,startReq){
 async function applyHardwareConstraints(stream){
   const track=stream.getVideoTracks()[0];
   const cap=track.getCapabilities(),set=track.getSettings();
-  const result={iso:set.iso||100,exposureTime:set.exposureTime?set.exposureTime*EXP_UNIT:1/250,frameRate:set.frameRate||30,whiteBalanceMode:set.whiteBalanceMode||'continuous',wbManual:false,constraintsApplied:false,deviceLabel:track.label||'Unbekannt',exposureReported:false,isoReported:false};
+  const result={iso:set.iso||100,exposureTime:set.exposureTime?set.exposureTime*EXP_UNIT:1/250,frameRate:set.frameRate||30,whiteBalanceMode:set.whiteBalanceMode||'continuous',wbManual:false,constraintsApplied:false,deviceLabel:track.label||'Unbekannt',exposureReported:false,isoReported:false,isoControlled:false};
   const constraints={};
   if(cap.exposureMode?.includes('manual')){
     constraints.exposureMode='manual';
@@ -1735,6 +1786,8 @@ async function applyHardwareConstraints(stream){
         const phase2={exposureTime:constraints.exposureTime};
         if(constraints.iso!==undefined) phase2.iso=constraints.iso;
         await track.applyConstraints({advanced:[phase2]});
+        // v3.4.28: festhalten, ob die App die ISO selbst gesetzt hat (HANDOFF Punkt 6).
+        result.isoControlled=constraints.iso!==undefined;
         if(constraints.whiteBalanceMode==='manual'){
           const phase3={whiteBalanceMode:'manual'};
           if(constraints.colorTemperature) phase3.colorTemperature=constraints.colorTemperature;
@@ -1773,6 +1826,7 @@ async function applyHardwareConstraints(stream){
         // anwenden, aber ehrlich als Software-Fallback deklarieren - der
         // SW-Poll in processLoop trackt dann exposureTime/ISO live.
         await track.applyConstraints({advanced:[constraints]});
+        result.isoControlled=constraints.iso!==undefined; // v3.4.28, s. oben
         if(constraints.whiteBalanceMode==='manual'){
           const nsSw=track.getSettings();
           result.wbManual=!nsSw.whiteBalanceMode||nsSw.whiteBalanceMode==='manual';
@@ -1832,6 +1886,7 @@ function loadCalibFactor(){
   try{const v=parseFloat(localStorage.getItem(CALIB_KEY+'_'+cameraFacing));return Number.isFinite(v)&&v>0?v:null;}catch(e){return null;}
 }
 function updateCalibDisplay(){
+  renderCalibPoints(); // v3.4.28
   const el=document.getElementById('activeCalibVal');
   if(customCalibFactor===null){el.textContent='– (unkalibriert)';return;}
   const off=calibOffset!==0?' '+(calibOffset>0?'+':'−')+Math.abs(calibOffset).toFixed(1):'';
@@ -1839,6 +1894,48 @@ function updateCalibDisplay(){
   // das Lichtprofil, unter dem sie erhoben wurde (s. calibStorageKey()).
   const scope=(calibLegacyScope?' · profilunabhängig (alt)':' · '+calibScopeLabel())+(calibIsoLegacy?' · vor v3.4.22 erhoben (nur bei ISO 401–1599 bis +8 %)':'');
   el.textContent='×'+customCalibFactor.toFixed(4)+off+' ('+calibPoints+' Punkt'+(calibPoints>1?'e':'')+')'+scope;
+}
+// v3.4.28: Kalibrierpunkte im Dialog anzeigen und einzeln loeschbar machen.
+// Bisher ersetzte jeder neue Punkt nur Punkt 2; ein veralteter Punkt 1 (etwa
+// aus einem frueheren Diffusor-Aufbau) liess sich nur mit Reset loswerden, und
+// Reset raeumt alle Profile der Kamera (README, Bekannte Grenzen Punkt 2).
+// Punkte werden per DOM aufgebaut (textContent), nicht per innerHTML.
+const fmtCal=v=>Number.isFinite(v)?(v<10?v.toFixed(1):String(Math.round(v))):'?';
+function renderCalibPoints(){
+  const el=document.getElementById('calibPointsList');
+  if(!el) return;
+  el.textContent='';
+  if(customCalibFactor===null){el.textContent='– keine';return;}
+  if(calibLegacyScope||!calibP1){el.textContent='Ältere Kalibrierung ohne einzeln gespeicherte Punkte – nur „Reset“.';return;}
+  [calibP1,calibP2].forEach((p,i)=>{
+    if(!p) return;
+    const row=document.createElement('div');
+    row.style.display='flex';row.style.justifyContent='space-between';row.style.alignItems='center';row.style.gap='8px';row.style.marginTop='4px';
+    const t=document.createElement('span');
+    t.textContent='P'+(i+1)+': roh '+fmtCal(p.raw)+' → '+fmtCal(p.ref)+' µmol';
+    const b=document.createElement('button');
+    b.className='modal-btn secondary';b.textContent='Löschen';
+    b.style.flex='0 0 auto';b.style.padding='4px 8px';b.style.fontSize='10px';
+    b.addEventListener('click',()=>deleteCalibPoint(i+1));
+    row.appendChild(t);row.appendChild(b);el.appendChild(row);
+  });
+}
+function deleteCalibPoint(n){
+  const d=loadCalib2Data();
+  if(calibLegacyScope||!d||!d.p1){showError('Diese Kalibrierung hat keine einzeln gespeicherten Punkte – nur „Reset“ möglich.');return;}
+  const pts=[d.p1,d.p2].filter(Boolean);
+  if(!(n>=1&&n<=pts.length)) return;
+  const p=pts[n-1];
+  if(!confirm('Kalibrierpunkt '+n+' (roh '+fmtCal(p.raw)+' → '+fmtCal(p.ref)+' µmol) löschen?')) return;
+  pts.splice(n-1,1);
+  // Der verbleibende Punkt wird Punkt 1 (reine Steigung, offsetfrei).
+  if(pts.length===0){try{localStorage.removeItem(calibStorageKey());}catch(e){}}
+  else{d.p1=pts[0];d.p2=null;try{localStorage.setItem(calibStorageKey(),JSON.stringify(d));}catch(e){}}
+  loadCalib();
+  updateCalibDisplay();
+  showError(pts.length===0
+    ?'Kalibrierpunkt gelöscht – für „'+calibScopeLabel()+'" ist die Anzeige jetzt unkalibriert.'
+    :'Kalibrierpunkt '+n+' gelöscht – es bleibt 1 Punkt (reine Steigung).');
 }
 function calibScopeLabel(){
   return manualLightKey==='AUTO'?'Auto-Erkennung':(LIGHT_PROFILES[manualLightKey]?.name ?? manualLightKey);
@@ -1881,11 +1978,10 @@ function applyCalibration(){
   const refPPFD=parseFloat(document.getElementById('refPPFD').value);
   if(!Number.isFinite(refPPFD)||refPPFD<=0||currentRawPPFDUncalibrated<=0){showError('Gültigen Referenzwert (>0) eingeben und Messung laufen lassen.');return;}
   // v3.4.27: Median der letzten Frames statt Einzelframe (s. calibRawMedian).
-  const rawCal=calibRawValue();
-  if(rawCal===null){showError(CALIB_RAW_WAIT_MSG);return;}
+  const rc=calibRawCheck();
+  if(rc.error){showError(rc.error);return;}
+  const rawCal=rc.raw;
   if(rawCal<5){showError('Rohwert zu niedrig zum Kalibrieren ('+rawCal.toFixed(1)+'). Unter hellem Licht kalibrieren.');return;}
-  const rawSpread=calibRawMedian.spread();
-  if(rawSpread!==null&&rawSpread>CALIB_RAW_MAX_SPREAD){showError('Messwert schwankt noch (Spanne '+(rawSpread*100).toFixed(0)+' % in der letzten Sekunde) – ruhig halten, bis er steht, dann erneut versuchen.');return;}
   if(lastFrameSnapshot?.clipLevel==='critical'){showError('Frame ist übersteuert – Kalibrierung unbrauchbar. Abstand zur Lampe erhöhen oder Diffusor prüfen.');return;}
   if(currentSignalLevel==='critical'){showError('Signal zu schwach zum Kalibrieren (Rauschen dominiert). Unter hellem Licht kalibrieren.');return;}
   // v3.4.0: Referenzpunkt hinzufügen (1. Punkt => reine Steigung wie bisher,
@@ -1894,12 +1990,17 @@ function applyCalibration(){
   // v3.4.27: ISO und Belichtungszeit des Punkts mitspeichern. Aendert sich die
   // Rohwert-Basis noch einmal, laesst sich ein Punkt damit exakt umrechnen statt
   // nur als "alt" zu kennzeichnen - genau diese Angabe fehlte bei v3.4.22.
-  const pt={raw:rawCal,ref:refPPFD,iso:hardwareSettings?.iso??null,exp:hardwareSettings?.exposureTime??null};
+  // v3.4.28: ebenso den Schwarzwert (s. blackLevelShift).
+  const pt={raw:rawCal,ref:refPPFD,iso:hardwareSettings?.iso??null,exp:hardwareSettings?.exposureTime??null,bl:blackLevelLin};
   let d=loadCalib2Data();
   // v3.4.24: Punkte aus dem alten ISO-Modell nicht mit einem neuen mischen -
   // die Gerade laege sonst zwischen zwei verschiedenen Rohwert-Skalen.
   let isoReset=false;
   if(d&&d.p1&&!(d.isoModel>=ISO_MODEL)){d=null;isoReset=true;}
+  // v3.4.28: ebenso keine Punkte mit verschiedenem Schwarzwert. Punkte ohne
+  // gespeicherten Schwarzwert (vor v3.4.28) sind nicht beurteilbar und bleiben.
+  let blReset=false;
+  if(d&&d.p1&&Number.isFinite(d.p1.bl)&&!sameBlackLevel(d.p1.bl,blackLevelLin)){d=null;blReset=true;}
   if(!d||!d.p1) d={p1:pt,p2:null};
   else d.p2=pt;
   d.isoModel=ISO_MODEL;
@@ -1921,6 +2022,7 @@ function applyCalibration(){
   calibP1=d.p1||null;calibP2=d.p2||null;calibFit=c; // v3.4.10: Stuetzstellen mitziehen
   updateCalibDisplay();
   if(isoReset) showError('Frühere Kalibrierpunkte stammten aus dem alten ISO-Modell und wurden verworfen – dies ist jetzt Punkt 1.');
+  if(blReset) showError('Der frühere Kalibrierpunkt wurde mit einem anderen Schwarzwert erhoben und verworfen – dies ist jetzt Punkt 1.');
   if(c.clamped){showError('Steigung außerhalb des zulässigen Bereichs – auf ×'+c.slope.toFixed(2)+' begrenzt. Referenz-/Rohwert prüfen!');}
   if(c.points===1){
     // Modal offen lassen: direkt zur zweiten Intensität übergehen möglich.
@@ -2006,6 +2108,13 @@ function saveTrainPoint(){
   if(!Number.isFinite(ref)||ref<0){showError('Gültigen Referenz-PPFD vom PAR-Meter eingeben.');return;}
   if(lastFrameSnapshot.clipLevel==='critical'){showError('Frame ist übersteuert – als Trainingsdatenpunkt unbrauchbar.');return;}
   if(lastFrameSnapshot.signalLevel==='critical'){showError('Frame ist unterbelichtet – als Trainingsdatenpunkt unbrauchbar (Rauschen dominiert).');return;}
+  // v3.4.28: Rohwert als Median der letzten Frames, wie bei der Kalibrierung
+  // (HANDOFF Punkt 7). Der Einzelframe bleibt als rawPPFDFrame erhalten; die
+  // uebrigen Felder (Farbanteile, Guete, Unsicherheit) sind weiter die des
+  // letzten Frames. rawFenster kennzeichnet, dass rawPPFDUncalibrated ein Median
+  // ueber so viele Frames ist - Punkte ohne das Feld sind Einzelbilder.
+  const rc=calibRawCheck();
+  if(rc.error){showError(rc.error);return;}
   try{localStorage.setItem(TRAINDEVICE_KEY,device);}catch(e){}
   const point={
     timestamp:new Date().toISOString(),
@@ -2014,7 +2123,10 @@ function saveTrainPoint(){
     notiz:(document.getElementById('trainNote').value||'').replace(/[,\n\r]/g,';'),
     kamera:cameraFacing,
     sessionId:currentSessionId, // v3.4.8: Gruppierung fuer die Auswertung (s. TRAINDATA_KEY)
-    ...lastFrameSnapshot
+    ...lastFrameSnapshot,
+    rawPPFDUncalibrated:rc.raw,
+    rawPPFDFrame:lastFrameSnapshot.rawPPFDUncalibrated,
+    rawFenster:CALIB_RAW_WINDOW
   };
   const data=loadTrainData();
   data.push(point);
@@ -2029,7 +2141,7 @@ function exportTrainCSV(){
   // nicht - csvField() schreibt dafuer ein leeres Feld, der Export bleibt also
   // rueckwaertskompatibel. Leere sessionId in der Auswertung heisst
   // "Gruppe unbekannt", nicht "eigene Gruppe".
-  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','belichtungGemeldet','isoGemeldet','rawPPFDUncalibrated','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','isoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
+  const cols=['timestamp','geraet','sessionId','referenzPPFD','notiz','kamera','avgR_gamma','avgG_gamma','avgB_gamma','avgR_lin','avgG_lin','avgB_lin','yMean_gamma','yMean_lin','exposureTime','iso','gainMultiplier','hardwareMode','fallbackMode','belichtungGemeldet','isoGemeldet','isoGesteuert','rawPPFDUncalibrated','rawPPFDFrame','rawFenster','lichtquelle','clipLevel','linearization','blackLevelLin','calibSteigung','calibOffset','calibPunkte','calibProfil','calibGeltung','calibIsoModell','calibSchwarzwertFaktor','isoModell','calibBereich','calibSpanLo','calibSpanHi','signalLevel','lichtquelleModus','profilFaktor','profilUnsicherheit','uniformityCV','qualityQ','qClip','qUniformity','qSignal','qStability','temporalCV','uRel','uSys','uRand','uCal','uProfile','uTemporal','uNoise'];
   // v3.4.3: Spaltenumbenennung nur in der KOPFZEILE - die Snapshot-Schluessel
   // bleiben unveraendert, damit vor v3.4.3 gespeicherte Datenpunkte weiter
   // korrekt exportiert werden. 'uRel_k1' macht explizit, dass die exportierten
@@ -2712,6 +2824,8 @@ function processLoop(timestamp){
     rawPPFD=Math.max(0,rawPPFD*customCalibFactor+calibOffset);
   }
   currentRawPPFD=rawPPFD;
+  // v3.4.28: Schwarzwert seit der Kalibrierung geaendert? (s. blackLevelShift)
+  const blShift=customCalibFactor!==null?blackLevelShift([calibP1,calibP2],blackLevelLin,yMean_lin):1;
   lastFrameSnapshot={
     avgR_gamma:avgR_gamma,avgG_gamma:avgG_gamma,avgB_gamma:avgB_gamma,
     avgR_lin:avgR_lin,avgG_lin:avgG_lin,avgB_lin:avgB_lin,
@@ -2726,6 +2840,12 @@ function processLoop(timestamp){
     // oben sehen in beiden Faellen gleich plausibel aus.
     belichtungGemeldet:hardwareSettings?(hardwareSettings.exposureReported?1:0):null,
     isoGemeldet:hardwareSettings?(hardwareSettings.isoReported?1:0):null,
+    // v3.4.28: Hat die App die ISO selbst gesetzt (1) oder bestimmt sie die
+    // Kamera (0)? Zusammen mit isoGemeldet=0 im Manuell-Modus der ungeklaerte
+    // Fall aus HANDOFF.md Punkt 6: ob die Kamera die ISO dann nachregelt, laesst
+    // sich an diesen Datenpunkten pruefen (Rohwert gegen Referenz bei
+    // verschiedenen Helligkeiten).
+    isoGesteuert:hardwareSettings?(hardwareSettings.isoControlled?1:0):null,
     rawPPFDUncalibrated:currentRawPPFDUncalibrated,
     lichtquelle:currentLightSourceName,
     clipLevel:clipStatus.level,
@@ -2748,6 +2868,7 @@ function processLoop(timestamp){
     calibSpanHi:lastRange?lastRange.hi:null,
     calibProfil:customCalibFactor===null?null:manualLightKey,
     calibIsoModell:customCalibFactor===null?null:(calibIsoLegacy?1:ISO_MODEL),
+    calibSchwarzwertFaktor:customCalibFactor===null?null:(Number.isFinite(blShift)?blShift:null), // v3.4.28
     // v3.4.27: Rohwert-BASIS des Datenpunkts. rawPPFDUncalibrated haengt an der
     // ISO-Kurve. Punkte OHNE dieses Feld sind nicht eindeutig: bis v3.4.21
     // Stufenfunktion, v3.4.22-26 schon die stetige Kurve. Ohne die Kennung
@@ -2845,6 +2966,7 @@ function processLoop(timestamp){
     document.getElementById('uncertaintyVal').textContent=uText
       +(customCalibFactor===null?' · unkalibriert':'')
       +(isoLegacyAffects?' · Altkalibrierung: bei ISO '+Math.round(effectiveISO)+' '+pctSigned(isoShift)+' (neu kalibrieren)':'')
+      +(Math.abs(blShift-1)>BL_SHIFT_NOTICE?' · Schwarzwert seit Kalibrierung geändert'+(Number.isFinite(blShift)?': '+pctSigned(blShift):'')+' (neu kalibrieren)':'')
       +(qGateOpen?'':' · gehalten: '+Q_WEAKEST_LABELS[lastQuality.gateWeakest])
       +(fehlt&&!expStat.placeholder?' · '+fehlt+' nicht gemeldet':'');
     setCalibRangeLine(calibRangeSuffix(lastRange));

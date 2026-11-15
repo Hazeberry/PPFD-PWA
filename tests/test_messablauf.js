@@ -42,12 +42,16 @@ function makeApp(opts={}){
   const els=new Map();
   function mkEl(id){
     const cls=new Set(),handlers={};
-    const el={id,textContent:'',value:'',disabled:false,className:'',
+    // kinder: echte Kindliste (v3.4.28, fuer die Kalibrierpunkt-Liste);
+    // textContent='' leert sie wie im Browser.
+    let text='';
+    const el={id,value:'',disabled:false,className:'',kinder:[],
+      get textContent(){return text;},set textContent(v){text=String(v);el.kinder=[];},
       style:{setProperty(k,v){this[k]=v;},removeProperty(){}},
       classList:{add:c=>cls.add(c),remove:c=>cls.delete(c),contains:c=>cls.has(c)},
       addEventListener(ev,fn){(handlers[ev]=handlers[ev]||[]).push(fn);},
       dispatch(ev,e){(handlers[ev]||[]).forEach(fn=>fn(e));},
-      appendChild(){},removeChild(){},click(){},get offsetWidth(){return 0;}};
+      appendChild(c){el.kinder.push(c);return c;},removeChild(){},click(){},get offsetWidth(){return 0;}};
     return el;
   }
   const frame={data:new Uint8ClampedArray(W*H*4)};
@@ -79,16 +83,19 @@ function makeApp(opts={}){
     applyConstraints:async c=>{cam.applied.push(c);if(cam.onApply) await cam.onApply(c,cam,app);},stop(){}};
   const stream={getVideoTracks:()=>[track],getTracks:()=>[track]};
   const navigator={userAgent:'Node-Test',mediaDevices:{getUserMedia:async()=>stream}};
-  let rafCb=null;
+  // requestAnimationFrame als Warteschlange wie im Browser (v3.4.28): Vorher
+  // hielt die Attrappe nur EINEN Callback - jeder weitere rAF-Aufruf (etwa die
+  // Balken-Animation in measureBlackLevel) verdraengte die Messschleife.
+  const raf=new Map();let rafSeq=0;
   const toasts=[];
   const api=new Function('localStorage','document','window','navigator','console','requestAnimationFrame','cancelAnimationFrame',
     'performance','alert','confirm','setTimeout','clearTimeout','__toast',
     src+';showError=function(m){__toast(m);};return {ev:(s)=>eval(s)};')(
-    localStorage,document,window,navigator,{log(){},warn(){},error(){}},cb=>{rafCb=cb;return 1;},()=>{rafCb=null;},
+    localStorage,document,window,navigator,{log(){},warn(){},error(){}},cb=>{const id=++rafSeq;raf.set(id,cb);return id;},id=>{raf.delete(id);},
     {now:()=>now},()=>{},()=>true,setTimeoutV,clearTimeoutV,m=>toasts.push(m));
   const app={ev:api.ev,store,cam,toasts,setFrame,advance,
     el:id=>document.getElementById(id),txt:id=>document.getElementById(id).textContent,
-    async frames(n,fps=30){for(let i=0;i<n;i++){now+=1000/fps;const cb=rafCb;rafCb=null;if(cb) cb(now);await flush();}},
+    async frames(n,fps=30){for(let i=0;i<n;i++){now+=1000/fps;const cbs=[...raf.values()];raf.clear();for(const cb of cbs) cb(now);await flush();}},
     async start(){
       let done=false;api.ev('startCamera()').then(()=>{done=true;},()=>{done=true;});
       for(let i=0;i<800&&!done;i++) await advance(50);
@@ -313,9 +320,13 @@ await t('REGRESSION: Profilwechsel - Kalibrierung und Trainingspunkt erst mit Ro
   await app.frames(2);
   assert.ok(/gemittelt/.test(app.kalibrieren(100).join(' ')),'Fenster mit Rohwerten des alten Profils benutzt');
   assert.deepStrictEqual(app.kalibKeys(),[]);
+  // v3.4.28: auch der Trainingspunkt wartet auf ein volles Fenster des neuen Profils.
+  assert.ok(/gemittelt/.test(app.trainingspunkt(100).join(' ')),'Trainingspunkt mit Rohwerten des alten Profils');
+  assert.strictEqual(app.punkte().length,0);
+  await app.frames(40);
   app.trainingspunkt(100);
   assert.strictEqual(app.punkte()[0].lichtquelle,'SODIUM_HPS','Trainingspunkt traegt das alte Profil');
-  await app.frames(40);
+  nahe(app.punkte()[0].rawPPFDUncalibrated,app.raw(),0.005,'Trainingspunkt-Rohwert');
   app.kalibrieren(100);
   const key=app.kalibKeys()[0];
   assert.ok(/SODIUM_HPS$/.test(key),'unter falschem Profil gespeichert: '+key);
@@ -380,6 +391,137 @@ await t('Neu kalibriert: Altpunkt wird nicht mit dem neuen gemischt, Warnung ver
   assert.ok(/verworfen/.test(m.join(' ')),'kein Hinweis auf den verworfenen Altpunkt: '+m);
   await app.frames(60);
   assert.ok(!/Altkalibrierung/.test(app.txt('uncertaintyVal')),app.txt('uncertaintyVal'));
+});
+
+console.log('== v3.4.28: Trainingspunkt als Median, Schwarzwert-Basis, Kalibrierpunkte loeschbar, ISO gesteuert ==');
+
+await t('Trainingspunkt: Median der letzten Frames, Einzelframe bleibt als rawPPFDFrame erhalten', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  const ruhig=app.raw();
+  app.setFrame([170,170,170]);await app.frames(1);            // einzelner heller Frame im Moment des Klicks
+  const ausreisser=app.raw();
+  assert.ok(ausreisser>ruhig*1.5,'Testaufbau: Ausreisser zu klein');
+  app.trainingspunkt(100);
+  const p=app.punkte()[0];
+  nahe(p.rawPPFDUncalibrated,ruhig,0.005,'gespeicherter Rohwert');
+  nahe(p.rawPPFDFrame,ausreisser,1e-9,'Einzelframe');
+  assert.strictEqual(p.rawFenster,app.ev('CALIB_RAW_WINDOW'));
+});
+
+await t('Trainingspunkt: schwankt der Wert noch, wird abgelehnt (wie beim Kalibrieren)', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  app.setFrame([90,90,90]);await app.frames(12);
+  assert.ok(/schwankt/.test(app.trainingspunkt(100).join(' ')));
+  assert.strictEqual(app.punkte().length,0);
+});
+
+async function schwarzwertMessen(app,rgb){
+  app.setFrame(rgb);
+  let fertig=false;app.ev('measureBlackLevel()').then(()=>{fertig=true;});
+  for(let i=0;i<60&&!fertig;i++) await app.advance(100);
+  assert.ok(fertig,'Schwarzwertmessung kam nicht zum Ende');
+}
+
+await t('REGRESSION: Schwarzwert nach dem Kalibrieren gemessen -> Meldung und Hinweis mit Groesse', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  app.kalibrieren(100);
+  assert.strictEqual(JSON.parse(app.store[app.kalibKeys()[0]]).p1.bl,0,'Schwarzwert nicht mit dem Punkt gespeichert');
+  await app.frames(60);
+  assert.ok(!/Schwarzwert/.test(app.txt('uncertaintyVal')),'Hinweis ohne Aenderung');
+  const n=app.toasts.length;
+  await schwarzwertMessen(app,[18,18,18]);                     // Linse abgedeckt, Restlicht
+  assert.ok(app.ev('blackLevelLin')>0,'Testaufbau: kein Schwarzwert gemessen');
+  assert.ok(app.toasts.slice(n).some(x=>/vorherigen Schwarzwert/.test(x)),'keine Meldung: '+app.toasts.slice(n));
+  app.setFrame([60,60,60]);await app.frames(60);              // schwaches Licht: Effekt deutlich
+  assert.ok(/Schwarzwert seit Kalibrierung geändert: −\d+ %/.test(app.txt('uncertaintyVal')),app.txt('uncertaintyVal'));
+  const f=app.ev('lastFrameSnapshot.calibSchwarzwertFaktor');
+  assert.ok(f<0.99,'Faktor im Datenpunkt: '+f);
+});
+
+await t('Zweiter Kalibrierpunkt mit anderem Schwarzwert: der erste wird verworfen, nicht gemischt', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  app.kalibrieren(100);
+  await schwarzwertMessen(app,[18,18,18]);
+  app.setFrame([200,200,200]);await app.frames(60);
+  const m=app.kalibrieren(400);
+  const d=JSON.parse(app.store[app.kalibKeys()[0]]);
+  assert.strictEqual(d.p2,null,'Punkte mit verschiedenem Schwarzwert gemischt');
+  assert.ok(d.p1.bl>0&&d.p1.ref===400);
+  assert.ok(/anderen Schwarzwert/.test(m.join(' ')),'Meldung: '+m);
+  await app.frames(60);
+  assert.ok(!/Schwarzwert/.test(app.txt('uncertaintyVal')),'Hinweis bleibt nach Neukalibrierung');
+});
+
+await t('REGRESSION: Kalibrierpunkte einzeln loeschbar - Punkt 1 loeschen laesst Punkt 2 als einzigen stehen', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  app.kalibrieren(100);
+  app.setFrame([200,200,200]);await app.frames(60);
+  const raw2=app.raw();
+  app.kalibrieren(500);
+  assert.strictEqual(app.ev('calibPoints'),2);
+  app.ev('openCalibModal()');
+  assert.strictEqual(app.el('calibPointsList').kinder.length,2,'Liste zeigt nicht beide Punkte');
+  app.ev('deleteCalibPoint(1)');
+  const d=JSON.parse(app.store[app.kalibKeys()[0]]);
+  assert.strictEqual(d.p2,null);
+  assert.strictEqual(d.p1.ref,500,'falscher Punkt geloescht');
+  nahe(d.p1.raw,raw2,0.005,'verbliebener Punkt');
+  assert.strictEqual(app.ev('calibPoints'),1);
+  assert.strictEqual(app.ev('calibOffset'),0,'ein Punkt muss offsetfrei sein');
+  await app.frames(60);
+  nahe(zahl(app.txt('ppfdVal')),500,0.02,'Anzeige nach dem Loeschen:');
+  app.ev('deleteCalibPoint(1)');
+  assert.deepStrictEqual(app.kalibKeys(),[],'letzter Punkt geloescht, Eintrag bleibt');
+  assert.strictEqual(app.ev('customCalibFactor'),null);
+  assert.ok(app.toasts.some(x=>/unkalibriert/.test(x)));
+});
+
+await t('Kalibrierpunkte: Punkt 2 loeschen; andere Profile bleiben unberuehrt', async()=>{
+  const app=makeApp({cam:MANUELL(),store:{'ppfd_calib2_v1_user_WHITE_LED':JSON.stringify({p1:{raw:50,ref:80},p2:null,isoModel:2})}});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  app.kalibrieren(100);
+  app.setFrame([200,200,200]);await app.frames(60);
+  app.kalibrieren(500);
+  app.ev('deleteCalibPoint(2)');
+  const d=JSON.parse(app.store['ppfd_calib2_v1_user_AUTO']);
+  assert.strictEqual(d.p1.ref,100);assert.strictEqual(d.p2,null);
+  assert.ok(app.store['ppfd_calib2_v1_user_WHITE_LED'],'anderes Profil mitgeloescht');
+});
+
+await t('Kalibrierpunkt-Liste im Dialog: zwei Zeilen mit Rohwert und Referenz, Knopf loescht den Punkt', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  app.kalibrieren(100);
+  app.setFrame([200,200,200]);await app.frames(60);
+  app.kalibrieren(500);
+  const zeilen=app.el('calibPointsList').kinder;
+  assert.strictEqual(zeilen.length,2,'Zeilen: '+zeilen.length);
+  const text=zeilen.map(r=>r.kinder[0].textContent);
+  assert.ok(/^P1: roh \d+ → 100 µmol$/.test(text[0])&&/^P2: roh \d+ → 500 µmol$/.test(text[1]),JSON.stringify(text));
+  zeilen[0].kinder[1].dispatch('click');
+  assert.strictEqual(JSON.parse(app.store[app.kalibKeys()[0]]).p1.ref,500,'Knopf loescht nicht Punkt 1');
+});
+
+await t('Alte Kalibrierung ohne Punkte: Loeschen verweist auf Reset, nichts wird veraendert', async()=>{
+  const app=makeApp({cam:MANUELL(),store:{'ppfd_calibFactor_v2_user':'2.0'}});
+  await app.start();await app.frames(EINSCHWINGEN+20);
+  app.ev('deleteCalibPoint(1)');
+  assert.strictEqual(app.store['ppfd_calibFactor_v2_user'],'2.0');
+  assert.ok(app.toasts.some(x=>/nur „Reset“/.test(x)));
+});
+
+await t('ISO gesteuert: Kamera mit ISO-Steuerung 1, ohne 0 - im Datenpunkt', async()=>{
+  for(const [cam,erwartet] of [[MANUELL(),1],[MANUELL({exposureTime:40,exposureMode:'manual'},{iso:undefined}),0],[SW_MIT_MELDUNG(),0]]){
+    const app=makeApp({cam});
+    await app.start();await app.frames(EINSCHWINGEN+40);
+    app.trainingspunkt(100);
+    assert.strictEqual(app.punkte()[0].isoGesteuert,erwartet,JSON.stringify(cam.caps));
+  }
 });
 
 console.log('\n'+pass+' passed, '+fail+' failed');
