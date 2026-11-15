@@ -76,9 +76,20 @@ function text(v){
 // gegeneinander verschieben:
 // 1) Die ISO-Kurve der App. Bis v3.4.21 Stufen (>400: 0.95, >800: 0.88), seit
 //    v3.4.22 stetig. Bei ISO 401-1599 liegen alte und neue Rohwerte bis zu 8 %
-//    auseinander. Neue Exporte tragen die Spalte isoModell; Punkte ohne sie
-//    stammen aus der Stufenfunktion und werden hier auf die aktuelle Basis
-//    umgerechnet (die ISO steht im Datensatz, die Umrechnung ist exakt).
+//    auseinander. Welche Basis ein Punkt hat, steht erst seit v3.4.27 im
+//    Datensatz (Spalte isoModell) - fuer aeltere Punkte muss sie erschlossen
+//    werden, und das geht nicht immer (s. rohwertBasis):
+//      'neu'    - isoModell >= 2, oder calibIsoModell ist gesetzt (das Feld
+//                 gibt es erst seit v3.4.24, also nach der Umstellung).
+//      'alt'    - Zeitstempel liegt vor dem ersten Commit von v3.4.22: die
+//                 stetige Kurve existierte da noch nicht. Wird exakt
+//                 umgerechnet (die ISO steht im Datensatz).
+//      'unklar' - alles andere: gespeichert mit v3.4.22-26 (neue Basis, noch
+//                 ohne Kennung) ODER mit einer aelteren, noch nicht
+//                 aktualisierten Installation (alte Basis). Nicht zu
+//                 unterscheiden. Solche Punkte werden NICHT umgerechnet; liegt
+//                 ihre ISO im betroffenen Band, bleiben sie dem Modellvergleich
+//                 fern, statt bis zu 8 % Versatz hineinzutragen.
 // 2) Der Software-Gain-Regler (Spalte gainMultiplier) - ein vom Nutzer
 //    eingestellter Faktor, der in den Rohwert einmultipliziert wird. Seit
 //    v3.4.27 speichert die App Trainingspunkte nur noch bei 1,00x; aeltere
@@ -98,6 +109,17 @@ function isoCalibFactorLegacy(iso){
   return iso>800?0.88:(iso>400?0.95:1);
 }
 function isoModelShift(iso){return isoCalibFactor(iso)/isoCalibFactorLegacy(iso);}
+// Erster Commit mit der stetigen Kurve (v3.4.22, 2dd9809). Ein aelterer Punkt
+// KANN sie nicht benutzt haben - vorausgesetzt, die Uhr des Geraets stimmte.
+const ISO_KURVE_STETIG_AB=Date.parse('2026-11-09T18:23:09Z');
+function rohwertBasis(r){
+  const isoModell=num(r.isoModell);
+  if(isoModell!==null&&isoModell>=ISO_MODELL_AKTUELL) return 'neu';
+  if(String(r.calibIsoModell??'').trim()!=='') return 'neu';
+  const ts=Date.parse(String(r.timestamp??'').trim());
+  if(Number.isFinite(ts)&&ts<ISO_KURVE_STETIG_AB) return 'alt';
+  return 'unklar';
+}
 
 // ---------------------------------------------------------- Datensatz ----
 // Angezeigter Wert wie in index.html: kalibriert => max(0, raw*Steigung+Offset).
@@ -114,8 +136,10 @@ function prepareRows(records){
     const calibrated=slope!==null;
     const shown=raw===null?null:(calibrated?Math.max(0,raw*slope+offset):raw);
     const gain=num(r.gainMultiplier), g=(gain!==null&&gain>0)?gain:1;
-    const iso=num(r.iso), isoModell=num(r.isoModell);
-    const shift=((isoModell===null||isoModell<ISO_MODELL_AKTUELL)&&iso!==null)?isoModelShift(iso):1;
+    const iso=num(r.iso), basis=rohwertBasis(r);
+    const moeglich=iso!==null?isoModelShift(iso):1;          // was die Umstellung bei dieser ISO ausmacht
+    const shift=basis==='alt'?moeglich:1;
+    const basisUnklar=basis==='unklar'&&Math.abs(moeglich-1)>1e-9;
     const rawBasis=raw===null?null:raw/g*shift;
     const R=num(r.avgR_lin),G=num(r.avgG_lin),B=num(r.avgB_lin);
     const sum=(R??0)+(G??0)+(B??0);
@@ -123,7 +147,7 @@ function prepareRows(records){
       zeile:i+2, sessionId:text(r.sessionId).trim()||null, geraet:text(r.geraet).trim(),
       kamera:text(r.kamera), lichtquelle:text(r.lichtquelle),
       ref, raw:rawBasis, rawExport:raw, slope, offset, calibrated, shown,
-      isoUmgerechnet:Math.abs(shift-1)>1e-9, gainHerausgerechnet:Math.abs(g-1)>1e-9,
+      isoUmgerechnet:Math.abs(shift-1)>1e-9, basisUnklar, gainHerausgerechnet:Math.abs(g-1)>1e-9,
       uRelK1:num(r.uRel_k1??r.uRel),
       r:sum>0?R/sum:null, g:sum>0?G/sum:null,
       logRatio:(ref>0&&rawBasis>0)?Math.log(ref/rawBasis):null,
@@ -254,10 +278,11 @@ function analyse(records,{folds=5,geraet=null}={}){
   const sessions=new Set(rows.filter(x=>x.sessionId).map(x=>x.sessionId));
   const res={zeilen:rows.length, ohneSession:rows.filter(x=>!x.sessionId).length,
     sitzungen:sessions.size, geraete, filterGeraet:geraet, abdeckung:coverage(rows), modelle:null, gegenprobe:null,
-    isoUmgerechnet:rows.filter(x=>x.isoUmgerechnet).length, gainHerausgerechnet:rows.filter(x=>x.gainHerausgerechnet).length};
+    isoUmgerechnet:rows.filter(x=>x.isoUmgerechnet).length, basisUnklar:rows.filter(x=>x.basisUnklar).length,
+    gainHerausgerechnet:rows.filter(x=>x.gainHerausgerechnet).length};
 
   // Modellvergleich: nur Punkte mit Sitzung und gueltigem Verhaeltnis.
-  const cv=rows.filter(x=>x.sessionId&&x.logRatio!==null&&x.r!==null&&x.raw>0);
+  const cv=rows.filter(x=>x.sessionId&&x.logRatio!==null&&x.r!==null&&x.raw>0&&!x.basisUnklar);
   res.cvPunkte=cv.length;
   const nGroups=new Set(cv.map(x=>x.sessionId)).size;
   res.cvSitzungen=nGroups;
@@ -298,6 +323,7 @@ function formatReport(res){
   L.push(`Punkte: ${res.zeilen}${res.filterGeraet?` (nur Gerät "${res.filterGeraet}")`:''} · Sitzungen: ${res.sitzungen} · Geräte: ${res.geraete.length?res.geraete.join(', '):'–'}`);
   if(res.ohneSession) L.push(`${res.ohneSession} Punkte ohne sessionId (vor v3.4.8 erfasst) - Gruppe unbekannt, im Modellvergleich nicht verwendet.`);
   if(res.isoUmgerechnet) L.push(`${res.isoUmgerechnet} Punkte aus der alten ISO-Kurve (vor v3.4.22, ISO 401-1599) auf die aktuelle Rohwert-Basis umgerechnet.`);
+  if(res.basisUnklar) L.push(`${res.basisUnklar} Punkte bei ISO 401-1599 ohne feststellbare Rohwert-Basis (gespeichert mit v3.4.22-26 oder mit einer noch nicht aktualisierten älteren Version; bis 8 % Unterschied) - im Modellvergleich nicht verwendet.`);
   if(res.gainHerausgerechnet) L.push(`${res.gainHerausgerechnet} Punkte mit Software-Gain ≠ 1,00×: der Regler-Faktor wurde aus dem Rohwert herausgerechnet.`);
   L.push('Die ehrliche Stichprobengröße ist die Zahl der SITZUNGEN, nicht der Punkte:');
   L.push('Punkte derselben Sitzung teilen Diffusor-Aufbau und Haltung und sind nicht unabhängig.');
@@ -349,7 +375,7 @@ function formatReport(res){
   return L.join('\n');
 }
 
-module.exports={isoCalibFactor,isoCalibFactorLegacy,isoModelShift,ISO_MODELL_AKTUELL,parseCSV,num,text,prepareRows,groupKFold,randomKFold,fitLinear,crossValidate,signTest,coverage,analyse,formatReport,MODELLE};
+module.exports={isoCalibFactor,isoCalibFactorLegacy,isoModelShift,ISO_MODELL_AKTUELL,rohwertBasis,parseCSV,num,text,prepareRows,groupKFold,randomKFold,fitLinear,crossValidate,signTest,coverage,analyse,formatReport,MODELLE};
 
 if(require.main===module){
   const args=process.argv.slice(2);

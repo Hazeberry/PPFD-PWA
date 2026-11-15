@@ -183,7 +183,7 @@ node tools/auswertung.js export.csv --json                 # maschinenlesbar
 
 **Bewusst noch nicht drin:** flexiblere Modelle (neuronales Netz, Gradient Boosting). Solange die einfachen nicht gemessen sind, gibt es nichts, wogegen sich ein flexibleres behaupten müsste — und die bräuchten Python-Abhängigkeiten. Gruppierung, Metrik und Gegenprobe sind dafür schon da; ein weiteres Modell ist ein Eintrag in `MODELLE`.
 
-**Gemeinsame Rohwert-Basis.** `rawPPFDUncalibrated` enthält zwei Dinge, die nichts mit der Szene zu tun haben: die ISO-Kurve der App (bis v3.4.21 Stufen, danach stetig — bei ISO 401–1599 bis zu 8 % Unterschied) und den Software-Gain-Regler. Die Auswertung rechnet beides heraus, bevor sie Modelle vergleicht: Punkte ohne die Spalte `isoModell` gelten als alte Basis und werden über die mitgespeicherte `iso` exakt umgerechnet, `gainMultiplier` wird aus dem Rohwert geteilt. Der Bericht nennt, wie viele Punkte das betraf. Seit v3.4.27 speichert die App Trainingspunkte ohnehin nur noch bei neutralem Regler und nur, wenn der Wert eine Messung ist (kein Platzhalter, siehe „Bekannte Grenzen“, Punkt 6).
+**Gemeinsame Rohwert-Basis.** `rawPPFDUncalibrated` enthält zwei Dinge, die nichts mit der Szene zu tun haben: die ISO-Kurve der App (bis v3.4.21 Stufen, danach stetig — bei ISO 401–1599 bis zu 8 % Unterschied) und den Software-Gain-Regler. Die Auswertung bringt die Punkte auf eine gemeinsame Basis, bevor sie Modelle vergleicht: `gainMultiplier` wird aus dem Rohwert geteilt, und Punkte mit der alten ISO-Kurve werden über die mitgespeicherte `iso` exakt umgerechnet. Welche Kurve ein Punkt hatte, steht erst seit v3.4.27 im Datensatz (`isoModell`). Davor lässt es sich nur teilweise erschließen: Ein Zeitstempel vor der Umstellung heißt sicher „alt“; ein Punkt aus der Zeit danach ohne Kennung kann aus v3.4.22–26 stammen (neue Kurve) oder von einer noch nicht aktualisierten Installation (alte). Solche Punkte rechnet die Auswertung nicht um — liegt ihre ISO zwischen 401 und 1599, lässt sie sie im Modellvergleich weg, statt bis zu 8 % Versatz hineinzutragen. Der Bericht nennt jeweils die Zahl der betroffenen Punkte. Seit v3.4.27 speichert die App Trainingspunkte ohnehin nur noch bei neutralem Regler und nur, wenn der Wert eine Messung ist (kein Platzhalter, siehe „Bekannte Grenzen“, Punkt 6).
 
 Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, im Modellvergleich nicht: Ihre Gruppe ist unbekannt. Eine von einem deutschen Excel neu gespeicherte Datei (Semikolon, Dezimalkomma) wird erkannt.
 
@@ -201,7 +201,7 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 | `tests/test_properties.js` | **34 Property-Tests** (fast-check) — Invarianten über zufällig erzeugte Eingaben |
 | `tests/test_model.js` | **3 Model-Based-Tests** (fast-check `fc.commands`) — zufällige Befehlsfolgen gegen ein Parallelmodell |
 | `tools/auswertung.js` | Auswertung des CSV-Exports: Unsicherheits-Check und Modellvergleich mit GroupKFold (siehe „Trainingsdaten auswerten“) |
-| `tests/test_auswertung.js` | **20 Tests** für die Auswertung — gegen echte Exporte der App, inkl. Fehlalarmrate und Trennschärfe über simulierte Datensätze |
+| `tests/test_auswertung.js` | **22 Tests** für die Auswertung — gegen echte Exporte der App, inkl. Fehlalarmrate und Trennschärfe über simulierte Datensätze |
 | `package.json` | **Nur für die Property-Tests.** Die App selbst hat keine Abhängigkeiten und keinen Build-Step |
 | `patches/` | Gestaffelte Patches der letzten Stufen (Review-Nachvollziehbarkeit) |
 
@@ -212,7 +212,7 @@ node tests/test_pipeline.js         # 184/184 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 49/49 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      # 12/12 erwartet
-node tests/test_auswertung.js       # 20/20 erwartet
+node tests/test_auswertung.js       # 22/22 erwartet
 node tests/test_messablauf.js       # 19/19 erwartet
 
 npm install                         # einmalig, nur für die Property-Tests

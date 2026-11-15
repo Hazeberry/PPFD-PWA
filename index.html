@@ -2849,7 +2849,8 @@ function processLoop(timestamp){
 
   if(state.id==='STABLE'){
     const zone=getPPFDZone(displayPPFD);
-    badgeEl.textContent=zone.label;
+    // v3.4.27: ohne Messwert (s. hasValue) keine Zone behaupten - displayPPFD ist dann 0.
+    badgeEl.textContent=hasValue?zone.label:'Messwert wird gebildet';
     ppfdEl.style.color=zone.color;
     badgeEl.style.color=zone.color;
     badgeEl.style.borderColor=zone.color;
