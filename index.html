@@ -394,11 +394,13 @@ class AdaptivePPFDKalmanFilter {
     // ueber 1-2 s hoch (nachgerechnet am echten Skript, wahrer Wert 51,3:
     // Software-Modus 5,8 -> 11 -> 14 -> ... 50 nach 60 Frames; Manuell 15 -> 23
     // -> 29 -> ... 50 nach 30 Frames) - nicht abgedunkelt, mit Zonen-Abzeichen,
-    // also als scheinbar gueltiger Live-Wert. v3.4.6 hatte genau diesen Effekt
-    // fuer den ALTEN Zustand behoben ("erster Wert 589 statt 200") und dabei
-    // den Startwert 0 eingefuehrt, der denselben Fehler in die andere Richtung
-    // macht. Der Aufrufer fuettert den Median der letzten Frames - der erste
-    // Wert ist also kein Einzelausreisser.
+    // also als scheinbar gueltiger Live-Wert. Der Startwert 0 stammt aus dem
+    // Kamerastart (schon v3.4.2: kalman.x=0.0); v3.4.6 hat ihn beim Rueckfall auf
+    // Auto uebernommen, um dort den ALTEN Zustand loszuwerden ("erster Wert 589
+    // statt 200") - mit demselben Fehler in die andere Richtung. Der Aufrufer
+    // fuettert den Median der letzten Frames und setzt erst, wenn dessen Fenster
+    // nur akzeptierte Frames enthaelt (s. acceptedStreak) - der erste Wert ist
+    // also kein Einzelausreisser.
     if(!this.seeded){this.seeded=true;this.x=measurement;this.lastMeasurement=measurement;this.lastInnovation=0;return this.x;}
     const delta=Math.abs(measurement-this.lastMeasurement);
     const qAdaptive=delta>500?this.q*10:this.q;
@@ -818,8 +820,11 @@ function isoCalibFactorLegacy(iso){
 // Verhaeltnis neuer/alter Rohwert bei derselben Szene und ISO. Mit einer vor
 // v3.4.22 erhobenen Kalibrierung liest die App genau um diesen Faktor anders
 // als damals. 1 = unveraendert - das gilt fuer ISO <=400, ISO 800 und ISO
-// >=1600, also insbesondere fuer den Manuell-Modus (dort setzt die App die
-// kleinste ISO ab 100). Groesste Abweichung knapp ueber ISO 800: 0.95/0.88 = +8 %.
+// >=1600, also im Regelfall fuer den Manuell-Modus: Bietet die Kamera
+// ISO-Steuerung an, setzt die App max(100, kleinste ISO), begrenzt auf 100,
+// wenn kein Maximum gemeldet wird (s. applyHardwareConstraints). Ohne
+// ISO-Steuerung bestimmt die Kamera die ISO selbst - dann gilt das nicht.
+// Groesste Abweichung knapp ueber ISO 800: 0.95/0.88 = +8 %.
 function isoModelShift(iso){return isoCalibFactor(iso)/isoCalibFactorLegacy(iso);}
 const ISO_SHIFT_NOTICE=0.005; // ab 0,5 % Unterschied wird die Altkalibrierung gemeldet
 
@@ -830,7 +835,8 @@ const ISO_SHIFT_NOTICE=0.005; // ab 0,5 % Unterschied wird die Altkalibrierung g
 // Helligkeit legen Steigung UND Offset fest. Das ist eine Gerade: sie trifft
 // beide Punkte, eine gekruemmte Kennlinie (Tonkurve, HDR, Saettigung) gleicht
 // sie nur naeherungsweise zwischen ihnen aus - eine allgemeine
-// Nichtlinearitaets-Korrektur ist es nicht. Hinweis: Ein abgedeckter Punkt ist als zweite Stuetze
+// Nichtlinearitaets-Korrektur ist es nicht.
+// Hinweis: Ein abgedeckter Punkt ist als zweite Stuetze
 // nahezu wertlos - blackLevelLin wird bereits pixel-domain subtrahiert,
 // rawPPFD waere per Konstruktion ~0.
 // Guards: Mindestabstand der Rohwerte (CALIB2_MIN_SEP), Steigung > 0;
@@ -936,10 +942,15 @@ function readLiveExposure(set,prev,unit){
 }
 // v3.4.27: Was meldet die Kamera NICHT - und ist der Wert damit noch eine
 // Messung? Die Formel teilt durch ISO x Belichtungszeit.
-//   - Manuell-Modus (constraintsApplied): Die Belichtung steht fest. Fehlt eine
-//     Meldung, rechnet die Formel mit dem angeforderten Wert; ein Fehler darin
-//     ist ein konstanter Skalenfaktor, den die Kalibrierung auffaengt. Hinweis
-//     ja, Messung bleibt Messung.
+//   - Manuell-Modus (constraintsApplied): Die Belichtungszeit steht fest. Fehlt
+//     ihre Meldung, rechnet die Formel mit dem angeforderten Wert; ein Fehler
+//     darin ist ein konstanter Skalenfaktor, den die Kalibrierung auffaengt.
+//     Fuer die ISO gilt das nur, wenn die App sie gesetzt hat (cap.iso). Ohne
+//     ISO-Steuerung und ohne ISO-Meldung rechnet die Formel mit dem Startwert
+//     (getSettings beim Start, sonst 100) - regelt die Kamera die ISO dann
+//     selbst nach, ist das NICHT konstant. Ob Kameras das im Manuell-Modus tun,
+//     ist ungeprueft (HANDOFF.md). Behandelt wird es hier als Hinweis, nicht als
+//     Platzhalter.
 //   - Auto-Belichtung (Software-Fallback): Die Kamera haelt die Bildhelligkeit
 //     selbst konstant. Fehlt die Meldung, kann die Formel das nicht
 //     herausrechnen - der Wert haengt dann kaum noch vom Licht ab. Das ist kein
@@ -1164,8 +1175,8 @@ let calibOffset=0,calibPoints=0;
 // zum Zeitpunkt der Kalibrierung (s. isoModelShift). Die Kalibrierung wird weiter
 // angewendet (Nutzerdaten werden nicht stillschweigend entwertet).
 // v3.4.27 FIX: Gewarnt wird nur noch, wenn die AKTUELLE ISO im betroffenen Band
-// liegt. v3.4.24 warnte pauschal - bei jedem Start per Meldung und dauerhaft in
-// der Unsicherheitszeile -, auch im Manuell-Modus bei ISO 100, wo sich der
+// liegt. v3.4.24 warnte pauschal - bei jedem Laden der Seite per Meldung und
+// dauerhaft in der Unsicherheitszeile -, auch im Manuell-Modus bei ISO 100, wo sich der
 // Messwert gar nicht geaendert hat. Loswerden liess sich das nur durch
 // Neukalibrieren, also mit einem PAR-Meter, das viele nur einmal geliehen
 // hatten. Eine Warnung, die staendig steht, liest niemand mehr.
@@ -1289,8 +1300,9 @@ let acceptedStreak=0;
 //   - Flackernde Lampen und Bewegung: Frame-zu-Frame-Streuung im Prozentbereich.
 // 31 Frames sind 0,5-1 s; ungerade, damit der Median ein echter Messwert ist.
 // Das Fenster enthaelt nur akzeptierte Frames (kein Halt, s. processLoop) und
-// wird verworfen, sobald sich die Rohwert-BASIS aendert (Profil, Software-Gain,
-// Schwarzwert, Kamerastart, Belichtungs-Stufe) - calibRawValue() liefert dann
+// wird verworfen, sobald sich die Rohwert-BASIS aendert (Profil manuell oder
+// per Auto-Erkennung, Software-Gain, Schwarzwert, Kamerastart/-stopp,
+// Belichtungs-Stufe, Rueckfall auf Auto) - calibRawValue() liefert dann
 // null, bis es wieder gefuellt ist.
 const CALIB_RAW_WINDOW=31;
 const calibRawMedian=new RollingMedian(CALIB_RAW_WINDOW);
@@ -2737,10 +2749,11 @@ function processLoop(timestamp){
     calibProfil:customCalibFactor===null?null:manualLightKey,
     calibIsoModell:customCalibFactor===null?null:(calibIsoLegacy?1:ISO_MODEL),
     // v3.4.27: Rohwert-BASIS des Datenpunkts. rawPPFDUncalibrated haengt an der
-    // ISO-Kurve; Punkte ohne dieses Feld stammen aus der Stufenfunktion (bis
-    // v3.4.21). Ohne die Kennung mischte ein gepoolter Datensatz beide Skalen,
-    // ohne dass es jemand sehen kann - tools/auswertung.js rechnet Altpunkte
-    // damit auf die aktuelle Basis um.
+    // ISO-Kurve. Punkte OHNE dieses Feld sind nicht eindeutig: bis v3.4.21
+    // Stufenfunktion, v3.4.22-26 schon die stetige Kurve. Ohne die Kennung
+    // mischte ein gepoolter Datensatz beide Skalen, ohne dass es jemand sehen
+    // kann - tools/auswertung.js ordnet Altpunkte ueber Zeitstempel und
+    // calibIsoModell zu, so weit es geht (s. rohwertBasis dort).
     isoModell:ISO_MODEL,
     calibGeltung:customCalibFactor===null?null:(calibLegacyScope?'profilunabhaengig':'profilspezifisch'),
     signalLevel:signalStatus.level,
