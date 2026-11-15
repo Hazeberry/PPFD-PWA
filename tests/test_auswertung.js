@@ -196,6 +196,88 @@ t('Treffer bei k=1 / k=2 werden richtig gezaehlt, Null-Zone ausgeschlossen', ()=
   assert.strictEqual(c.unkalibriert.punkte,3);
 });
 
+console.log('== Rohwert-Basis: ISO-Kurve und Software-Gain (v3.4.27) ==');
+
+t('ISO-Funktionen des Werkzeugs sind identisch mit denen der App', ()=>{
+  const html=fs.readFileSync(path.join(__dirname,'..','index.html'),'utf8');
+  const pure=html.match(/\/\* ===PURE-PIPELINE-BEGIN=== \*\/([\s\S]*?)\/\* ===PURE-PIPELINE-END=== \*\//)[1];
+  const P=new Function('"use strict";'+pure+';return {isoCalibFactor,isoCalibFactorLegacy,isoModelShift};')();
+  for(let iso=25;iso<=6400;iso+=1){
+    assert.strictEqual(A.isoCalibFactor(iso),P.isoCalibFactor(iso),'isoCalibFactor bei '+iso);
+    assert.strictEqual(A.isoCalibFactorLegacy(iso),P.isoCalibFactorLegacy(iso),'Legacy bei '+iso);
+  }
+  assert.ok(/const ISO_MODEL=2;/.test(html)&&A.ISO_MODELL_AKTUELL===2,'ISO-Modell-Nummer laeuft auseinander');
+});
+
+t('REGRESSION: Altpunkt bei ISO 1000 wird auf die aktuelle Basis umgerechnet, neuer nicht', ()=>{
+  // Derselbe Messaufbau, einmal mit der alten Stufenkurve (kein isoModell),
+  // einmal mit der neuen exportiert: die Rohwerte unterscheiden sich um 5,4 %.
+  const neu=200, alt=neu/A.isoModelShift(1000);
+  const csv=exportViaApp([
+    punkt({sessionId:'s1',iso:1000,rawPPFDUncalibrated:alt}),                 // vor v3.4.22
+    punkt({sessionId:'s2',iso:1000,rawPPFDUncalibrated:neu,isoModell:2}),      // ab v3.4.27
+    punkt({sessionId:'s3',iso:100,rawPPFDUncalibrated:neu}),                   // alt, aber ISO nicht betroffen
+  ]);
+  const {header,records}=A.parseCSV(csv);
+  assert.ok(header.includes('isoModell'),'Spalte isoModell fehlt im Export');
+  const rows=A.prepareRows(records);
+  assert.ok(Math.abs(alt-189.77)<0.05,'Testaufbau: alter Rohwert '+alt.toFixed(2));
+  assert.ok(Math.abs(rows[0].raw-neu)<1e-4,'Altpunkt nicht umgerechnet: '+rows[0].raw); // CSV traegt 8 Stellen
+  assert.strictEqual(rows[0].isoUmgerechnet,true);
+  assert.ok(Math.abs(rows[0].rawExport-alt)<1e-4,'Original muss erhalten bleiben');
+  assert.strictEqual(rows[1].raw,neu); assert.strictEqual(rows[1].isoUmgerechnet,false);
+  assert.strictEqual(rows[2].raw,neu); assert.strictEqual(rows[2].isoUmgerechnet,false,'ISO 100 ist nicht betroffen');
+  assert.ok(Math.abs(rows[0].logRatio-rows[1].logRatio)<1e-6,'gleiche Szene muss denselben Korrekturfaktor ergeben');
+});
+
+t('REGRESSION: Punkte aus v3.4.22-26 (neue Basis, noch ohne Kennung) werden NICHT als alt umgerechnet', ()=>{
+  // Zwischen der Umstellung der ISO-Kurve und der Spalte isoModell liegen fuenf
+  // Versionen. Deren Punkte haben schon die neue Basis - 'keine Kennung' allein
+  // heisst also nicht 'alt'. Nicht unterscheidbar von einer aelteren, noch nicht
+  // aktualisierten Installation: deshalb weder umrechnen noch mitvergleichen.
+  const nachUmstellung='2026-11-12T10:00:00Z';
+  const csv=exportViaApp([
+    punkt({sessionId:'s1',iso:1000,rawPPFDUncalibrated:200,timestamp:nachUmstellung}),                      // unklar, ISO betroffen
+    punkt({sessionId:'s2',iso:100,rawPPFDUncalibrated:200,timestamp:nachUmstellung}),                       // unklar, aber ISO nicht betroffen
+    punkt({sessionId:'s3',iso:1000,rawPPFDUncalibrated:200,timestamp:nachUmstellung,calibSteigung:2,calibOffset:0,calibIsoModell:2}), // v3.4.24+: neu
+    punkt({sessionId:'s4',iso:1000,rawPPFDUncalibrated:200,timestamp:'kein Datum'}),                        // unlesbar -> unklar
+  ]);
+  const records=A.parseCSV(csv).records;
+  assert.deepStrictEqual(records.map(A.rohwertBasis),['unklar','unklar','neu','unklar']);
+  const rows=A.prepareRows(records);
+  for(const r of rows) assert.strictEqual(r.raw,200,'Rohwert veraendert, obwohl die Basis nicht alt ist');
+  assert.deepStrictEqual(rows.map(r=>r.basisUnklar),[true,false,false,true]);
+  assert.deepStrictEqual(rows.map(r=>r.isoUmgerechnet),[false,false,false,false]);
+});
+
+t('Punkte mit unklarer Basis bleiben dem Modellvergleich fern und stehen im Bericht', ()=>{
+  const pts=[];
+  for(let s=0;s<4;s++) for(let i=0;i<3;i++) pts.push(punkt({sessionId:'s'+s,iso:s<2?1000:100,rawPPFDUncalibrated:150+20*i+s,timestamp:'2026-11-12T10:00:00Z'}));
+  const res=A.analyse(A.parseCSV(exportViaApp(pts)).records);
+  assert.strictEqual(res.basisUnklar,6);
+  assert.strictEqual(res.cvPunkte,6,'unklare Punkte im Modellvergleich');
+  assert.strictEqual(res.cvSitzungen,2);
+  assert.ok(/ohne feststellbare Rohwert-Basis/.test(A.formatReport(res)));
+  assert.strictEqual(res.abdeckung.alle.punkte,12,'die Unsicherheits-Zaehlung haengt nicht an der Basis');
+});
+
+t('Software-Gain wird aus dem Rohwert herausgerechnet, der angezeigte Wert bleibt', ()=>{
+  const csv=exportViaApp([punkt({sessionId:'s1',gainMultiplier:2,rawPPFDUncalibrated:400,calibSteigung:1.5,calibOffset:0,isoModell:2})]);
+  const r=A.prepareRows(A.parseCSV(csv).records)[0];
+  assert.strictEqual(r.raw,200,'Regler-Faktor steckt noch im Rohwert');
+  assert.strictEqual(r.gainHerausgerechnet,true);
+  assert.strictEqual(r.shown,600,'angezeigt war raw*Steigung mit dem Regler - das darf sich nicht aendern');
+});
+
+t('Bericht nennt die Umrechnungen', ()=>{
+  const pts=[];
+  for(let s=0;s<3;s++) for(let i=0;i<3;i++) pts.push(punkt({sessionId:'s'+s,iso:1000,rawPPFDUncalibrated:150+20*i+s,gainMultiplier:i===0?1.5:1}));
+  const res=A.analyse(A.parseCSV(exportViaApp(pts)).records);
+  assert.strictEqual(res.isoUmgerechnet,9); assert.strictEqual(res.gainHerausgerechnet,3);
+  const b=A.formatReport(res);
+  assert.ok(/alten ISO-Kurve/.test(b)&&/Software-Gain/.test(b),'Bericht verschweigt die Umrechnung');
+});
+
 console.log('== Kommandozeile ==');
 
 function runCLI(csv,extra=[]){

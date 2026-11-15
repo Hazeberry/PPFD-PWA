@@ -23,7 +23,9 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   U_CAL_CALIBRATED, U_CAL_UNCALIBRATED, U_AUTO_CLASS_MIN,
   U_NOISE_FLOOR, U_NOISE_K, U_NOISE_MAX, computeCalib2, CALIB2_MIN_SEP, CALIB2_MIN_SLOPE, CALIB2_MAX_SLOPE,
   RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
-  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure };`)();
+  normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure,
+  isoCalibFactorLegacy, isoModelShift, ISO_SHIFT_NOTICE,
+  exposureStatus, markUnquantifiable };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -265,8 +267,17 @@ t('Ohne Kalibrierung und ohne Stuetzstellen wird nichts behauptet', () => {
   assert.strictEqual(P.calibRangeStatus(500, { raw: 0 }, null, FIT1).state, 'unknown');
 });
 
+t('REGRESSION (v3.4.27): Rohwert exakt 0 ist ein Messwert - Null-Zone bzw. unter dem Bereich', () => {
+  // Schwarzer Frame. Mit negativem Offset klemmt die Anzeige auf 0: Null-Zone.
+  assert.strictEqual(P.calibRangeStatus(0, P1, P2, FIT2).state, 'zero-zone');
+  // Ohne Offset gibt es keine Null-Zone, 0 liegt aber unter jeder Stuetzstelle.
+  assert.strictEqual(P.calibRangeStatus(0, { raw: 400, ref: 500 }, null, FIT1).state, 'below');
+  // Stetigkeit: 0 und ein winziger Rohwert bekommen dieselbe Auskunft.
+  assert.strictEqual(P.calibRangeStatus(0, P1, P2, FIT2).state, P.calibRangeStatus(1e-9, P1, P2, FIT2).state);
+});
+
 t('Unbrauchbare Rohwerte kippen die Auskunft nicht', () => {
-  for (const raw of [0, -5, NaN, Infinity]) {
+  for (const raw of [-5, NaN, Infinity]) {
     const r = P.calibRangeStatus(raw, P1, P2, FIT2);
     assert.strictEqual(r.state, 'ok', 'raw=' + raw + ' -> ' + r.state);
     assert.ok(Number.isFinite(r.lo) && Number.isFinite(r.hi), 'Spanne muss trotzdem stimmen');
@@ -606,7 +617,7 @@ t('Umstellung geht vor Gate (kuerzere, genauere Ursache)', () => {
 
 t('Verdrahtung: Abzeichen wird gesetzt, Zahl abgedunkelt und danach wieder normal', () => {
   assert.ok(/const held=heldReason\(/.test(html), 'processLoop ruft heldReason nicht auf');
-  assert.ok(/ppfdEl\.style\.opacity=held\?'0\.4':''/.test(html), 'Zahl wird nicht abgedunkelt bzw. nicht zurueckgesetzt');
+  assert.ok(/ppfdEl\.style\.opacity=\(held\|\|placeholderShown\)\?'0\.4':''/.test(html), 'Zahl wird nicht abgedunkelt bzw. nicht zurueckgesetzt');
   assert.ok(/'Gehalten: '\+\(Q_WEAKEST_LABELS\[held\.weakest\]/.test(html), 'Abzeichen nennt den Grund nicht');
   // Muss NACH dem Zustands-Zweig stehen, sonst ueberschreibt der es wieder.
   assert.ok(html.indexOf('const held=heldReason(') > html.indexOf("dotEl.className=`status-dot active ${state.id.toLowerCase()}`;"),
@@ -620,7 +631,7 @@ t('Verdrahtung: Software-Poll nutzt readLiveExposure und den schnelleren Takt', 
   const n = Number(html.match(/const SW_POLL_INTERVAL=(\d+)/)[1]);
   assert.ok(n >= 5 && n <= 30, 'SW_POLL_INTERVAL=' + n + ' (bei 60 fps ~' + (n / 60 * 1000).toFixed(0) + ' ms)');
   assert.ok(/exposureReported:false,isoReported:false/.test(html), 'Startzustand ist nicht "nicht gemeldet"');
-  assert.ok(/\+\(exposureGuessed\?' · Belichtung\/ISO nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
+  assert.ok(/\+\(fehlt&&!expStat\.placeholder\?' · '\+fehlt\+' nicht gemeldet':''\)/.test(html), 'Hinweis erscheint nicht in der Unsicherheitszeile');
 });
 
 console.log('== Kalman-Reset beim Moduswechsel (v3.4.6) ==');
@@ -1222,7 +1233,8 @@ t('Integration: Anzeige-Pipeline nutzt kanalweisen Schwarzwert und Fortpflanzung
   assert.ok(/gammaLUT,blackLevelRGB\)/.test(html), 'analyzeFrame bekommt nicht den kanalweisen Schwarzwert');
   assert.ok(/propagateAffineUncertainty\(lastUncertainty,currentRawPPFDUncalibrated,customCalibFactor,calibOffset\)/.test(html), 'Fortpflanzung nicht verdrahtet');
   assert.ok(/1284\*isoCalibFactor\(iso\)/.test(html), 'stetiger ISO-Faktor nicht verdrahtet');
-  assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(html), 'isoReported wird nicht ausgewertet');
+  assert.ok(/const expStat=exposureStatus\(hardwareSettings\);/.test(html), 'isoReported wird nicht ausgewertet (exposureStatus nicht verdrahtet)');
+  assert.deepStrictEqual(P.exposureStatus({ constraintsApplied: false, exposureReported: true, isoReported: false }).missing, ['ISO']);
 });
 
 console.log('== v3.4.22: Nachweis manuelle Belichtung, Initialisierungsreihenfolge, Kalibrier-Gates ==');
@@ -1306,8 +1318,8 @@ t('Neue Kalibrierung traegt isoModel, alte wird erkannt und nicht mit neuer gemi
   assert.ok(/d\.isoModel=ISO_MODEL/.test(body), 'isoModel wird nicht gespeichert');
 });
 t('Altkalibrierung ist sichtbar: Anzeige, Unsicherheitszeile, Export', () => {
-  assert.ok(/altes ISO-Modell – neu kalibrieren/.test(html));
-  assert.ok(/Kalibrierung mit altem ISO-Modell/.test(html));
+  assert.ok(/vor v3\.4\.22 erhoben/.test(html), 'Kalibrierdialog nennt die Altkalibrierung nicht');
+  assert.ok(/isoLegacyAffects\?' · Altkalibrierung: bei ISO '/.test(html), 'Unsicherheitszeile meldet die Altkalibrierung nicht');
   assert.ok(/calibIsoModell:/.test(html) && /'calibGeltung','calibIsoModell'/.test(html));
   assert.ok(/nicht zuverlässig quantifizierbar/.test(html), 'Anzeige fuer unquantifizierbare Unsicherheit fehlt');
 });
@@ -1362,10 +1374,10 @@ t('confirmManualExposure: continuous + abweichende Zeit + keine Reaktion -> kein
   assert.strictEqual(P.confirmManualExposure({ attempted: true, reportedMode: 'continuous', liveExp: 100, requestedExp: 40, rampVerified: false }), false);
 });
 t('Hinweis gilt auch im Manuell-Modus (kein pauschaler Ausschluss ueber constraintsApplied)', () => {
-  const m = html.match(/const exposureGuessed=([^;]*);/);
-  assert.ok(m, 'exposureGuessed nicht gefunden');
-  assert.ok(!/constraintsApplied/.test(m[1]), 'Manuell-Modus weiterhin ausgenommen: ' + m[1]);
-  assert.ok(/exposureReported&&hardwareSettings\.isoReported/.test(m[1]));
+  // v3.4.27: als Verhalten statt am Quelltext geprueft (exposureStatus).
+  const s = P.exposureStatus({ constraintsApplied: true, exposureReported: false, isoReported: false });
+  assert.deepStrictEqual(s.missing, ['Belichtung', 'ISO'], 'Manuell-Modus weiterhin ausgenommen');
+  assert.strictEqual(s.placeholder, false, 'Manuell-Modus mit festem Lock ist kein Platzhalter');
 });
 t('Manuell-Pfad setzt die Meldungs-Flags und schaetzt mit dem ANGEFORDERTEN Wert', () => {
   const i = html.indexOf('async function applyHardwareConstraints'), j = html.indexOf('function loadCalibFactor', i);
@@ -1379,6 +1391,164 @@ t('readLiveExposure mit Anforderungs-Schaetzung: keine Meldung -> angeforderter 
   const r = P.readLiveExposure({}, { exposureTime: 40e-4, iso: 100 }, 1e-4);
   approx(r.exposureTime, 40e-4, 1e-12); assert.strictEqual(r.iso, 100);
   assert.strictEqual(r.exposureReported, false); assert.strictEqual(r.isoReported, false);
+});
+
+console.log('== v3.4.27: Altkalibrierung nur dort melden, wo sie sich auswirkt ==');
+t('isoModelShift: unveraendert bei ISO <=400, genau 800 und >=1600', () => {
+  for (const iso of [50, 100, 200, 400, 800, 1600, 3200, 6400]) {
+    approx(P.isoModelShift(iso), 1, 1e-12, 'ISO ' + iso);
+  }
+  assert.strictEqual(P.isoModelShift(0), 1); assert.strictEqual(P.isoModelShift(NaN), 1);
+});
+t('isoModelShift: Gegenbeispiel aus dem Review (ISO 1000: 100 -> 105,39) und Maximum +8 %', () => {
+  approx(100 * P.isoModelShift(1000), 105.39, 0.01, 'ISO 1000');
+  let max = 0, bei = 0;
+  for (let iso = 1; iso <= 6400; iso++) { const s = P.isoModelShift(iso); assert.ok(s >= 1 - 1e-12, 'nie niedriger als frueher, ISO ' + iso); if (s > max) { max = s; bei = iso; } }
+  assert.strictEqual(bei, 801, 'groesste Abweichung direkt ueber der alten Stufe');
+  approx(max, 0.95 / 0.88, 2e-4, 'Maximum');
+  assert.ok(max < 1.08, 'Text nennt "bis +8 %", Maximum ist ' + max);
+});
+t('Meldeschwelle: ISO 100 loest nichts aus, ISO 1000 schon', () => {
+  assert.ok(Math.abs(P.isoModelShift(100) - 1) <= P.ISO_SHIFT_NOTICE);
+  assert.ok(Math.abs(P.isoModelShift(1000) - 1) > P.ISO_SHIFT_NOTICE);
+  assert.ok(Math.abs(P.isoModelShift(410) - 1) > P.ISO_SHIFT_NOTICE);
+});
+t('Keine pauschale Meldung beim Seitenstart mehr', () => {
+  assert.ok(!/if\(calibIsoLegacy\) setTimeout\(\(\)=>showError/.test(html), 'Start-Toast fuer jede Altkalibrierung wieder da');
+  assert.ok(/isoLegacyAffects&&!isoLegacyToastShown&&settleStatus\.isWarmedUp/.test(html), 'Meldung haengt nicht an der betroffenen ISO');
+});
+t('Kalibrierpunkt speichert ISO und Belichtungszeit; Datenpunkt die Rohwert-Basis', () => {
+  assert.ok(/const pt=\{raw:rawCal,ref:refPPFD,iso:hardwareSettings\?\.iso\?\?null,exp:hardwareSettings\?\.exposureTime\?\?null\}/.test(html));
+  assert.ok(/isoModell:ISO_MODEL,/.test(html) && /'calibIsoModell','isoModell'/.test(html), 'isoModell fehlt in Snapshot oder CSV');
+});
+
+console.log('== v3.4.27: Platzhalter-Wert (Auto-Belichtung ohne gemeldete Belichtung/ISO) ==');
+t('exposureStatus: alles gemeldet -> kein Hinweis, kein Platzhalter (beide Modi)', () => {
+  for (const ca of [true, false]) {
+    const s = P.exposureStatus({ constraintsApplied: ca, exposureReported: true, isoReported: true });
+    assert.deepStrictEqual(s.missing, []); assert.strictEqual(s.placeholder, false);
+  }
+  assert.deepStrictEqual(P.exposureStatus(null), { missing: [], placeholder: false }, 'ohne Kamera nichts behaupten');
+});
+t('exposureStatus: Auto-Belichtung ohne Meldung ist ein Platzhalter (auch wenn nur EINE Groesse fehlt)', () => {
+  assert.strictEqual(P.exposureStatus({ constraintsApplied: false, exposureReported: false, isoReported: false }).placeholder, true);
+  assert.strictEqual(P.exposureStatus({ constraintsApplied: false, exposureReported: true, isoReported: false }).placeholder, true, 'ISO kann unbemerkt nachregeln');
+  assert.strictEqual(P.exposureStatus({ constraintsApplied: false, exposureReported: false, isoReported: true }).placeholder, true);
+});
+t('exposureStatus: Hinweis nennt, WAS fehlt', () => {
+  assert.deepStrictEqual(P.exposureStatus({ constraintsApplied: true, exposureReported: true, isoReported: false }).missing, ['ISO']);
+  assert.deepStrictEqual(P.exposureStatus({ constraintsApplied: true, exposureReported: false, isoReported: true }).missing, ['Belichtung']);
+});
+t('markUnquantifiable: keine Prozentzahl, Einzelbeitraege bleiben, Eingabe unveraendert', () => {
+  const u = P.computeUncertainty({ calibrated: false, profileU: 0.05, autoMode: true, temporalCV: 0.01, yMeanLin: 0.2 });
+  const vorher = JSON.stringify(u);
+  const m = P.markUnquantifiable(u, 'exposure');
+  assert.strictEqual(m.uRel, null); assert.strictEqual(m.uSys, null); assert.strictEqual(m.uRand, null);
+  assert.strictEqual(m.unquantifiable, true); assert.strictEqual(m.unquantifiableReason, 'exposure');
+  assert.strictEqual(m.uCal, u.uCal, 'Teilbeitraege bleiben nachvollziehbar');
+  assert.strictEqual(JSON.stringify(u), vorher);
+});
+t('REGRESSION: Fortpflanzung macht aus "nicht quantifizierbar" keine 0 %', () => {
+  const u = P.computeUncertainty({ calibrated: true, profileU: 0.05, autoMode: false, temporalCV: 0.01, yMeanLin: 0.2 });
+  const m = P.markUnquantifiable(u, 'exposure');
+  const p = P.propagateAffineUncertainty(m, 100, 1, -50);   // Faktor 2: null*2 waere 0
+  assert.strictEqual(p.uRel, null, 'uRel wurde zu ' + p.uRel);
+  assert.strictEqual(p.unquantifiableReason, 'exposure', 'Grund darf nicht ueberschrieben werden');
+  assert.strictEqual(P.propagateAffineUncertainty(u, 40, 1, -50).unquantifiableReason, 'zero-zone');
+});
+t('Verdrahtung: Sperre in Kalibrierung UND Trainingspunkt, Vermerk im Datenpunkt und im Export', () => {
+  for (const fn of ['applyCalibration', 'saveTrainPoint']) {
+    const i = html.indexOf('function ' + fn + '(');
+    assert.ok(/exposureStatus\(hardwareSettings\)\.placeholder\)\{showError\(EXPOSURE_PLACEHOLDER_MSG\);return;\}/.test(html.slice(i, i + 1200)), fn + '() sperrt den Platzhalter-Zustand nicht');
+  }
+  assert.ok(/belichtungGemeldet:hardwareSettings\?\(hardwareSettings\.exposureReported\?1:0\):null/.test(html));
+  assert.ok(/'belichtungGemeldet','isoGemeldet'/.test(html), 'Spalten fehlen im Export');
+  assert.ok(/if\(expStat\.placeholder\) lastUncertainty=markUnquantifiable\(lastUncertainty,'exposure'\);/.test(html));
+});
+
+console.log('== v3.4.27: Software-Gain und Profilwechsel bei Kalibrierung/Trainingspunkt ==');
+t('Verdrahtung: Software-Gain ungleich 1,00x sperrt Kalibrierung und Trainingspunkt', () => {
+  assert.ok(/function softwareGainActive\(\)\{return useSoftwareGain&&Math\.abs\(gainController\.gain-1\)>1e-9;\}/.test(html));
+  for (const fn of ['applyCalibration', 'saveTrainPoint']) {
+    const i = html.indexOf('function ' + fn + '(');
+    assert.ok(/if\(softwareGainActive\(\)\)\{showError\(gainNeutralMsg\(\)\);return;\}/.test(html.slice(i, i + 1500)), fn + '() prueft den Regler nicht');
+  }
+});
+t('Verdrahtung: Trainingspunkt ist nach einem Profilwechsel gesperrt wie die Kalibrierung', () => {
+  const i = html.indexOf('function saveTrainPoint(');
+  const kopf = html.slice(i, html.indexOf('const device=', i));
+  assert.ok(/if\(profileSwitchPending\)\{showError\(PROFILE_SWITCH_WAIT_MSG\);return;\}/.test(kopf));
+});
+
+console.log('== v3.4.27: Kalman startet beim ersten Messwert, nicht bei 0 ==');
+t('REGRESSION: erster Wert nach Konstruktion ist der Messwert selbst', () => {
+  for (const r of [2.5, 8.0]) {
+    const k = new P.AdaptivePPFDKalmanFilter(); k.r = r;
+    assert.strictEqual(k.update(600), 600, 'r=' + r + ': Anzeige begann nicht beim Messwert');
+    assert.strictEqual(k.innovation, 0);
+  }
+});
+t('REGRESSION: nach reset() ebenso - kein Hochlaufen von 0 (Kamerastart, Rueckfall auf Auto)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 300; i++) k.update(600);
+  k.r = 8.0; k.reset();
+  assert.strictEqual(k.seeded, false);
+  const erste = [k.update(200), k.update(200), k.update(200)];
+  assert.deepStrictEqual(erste, [200, 200, 200], 'Anzeige nach reset: ' + erste.map(v => v.toFixed(1)).join(', '));
+});
+t('Danach glaettet der Filter wie bisher (ein Ausreisser verschiebt x nur anteilig)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 100; i++) k.update(500);
+  const nach = k.update(1000);
+  assert.ok(nach > 500 && nach < 600, 'Ausreisser schlug durch: ' + nach.toFixed(1));
+});
+t('Sprungantwort bleibt unveraendert traege (Glaettung ist nicht abgeschaltet)', () => {
+  const k = new P.AdaptivePPFDKalmanFilter();
+  for (let i = 0; i < 100; i++) k.update(100);
+  let n = 0; while (Math.abs(k.update(200) - 200) > 5 && n < 500) n++;
+  assert.ok(n >= 5, 'Sprung in ' + n + ' Frames uebernommen - Filter glaettet nicht mehr');
+});
+t('Verdrahtung: gesetzt wird erst, wenn das Median-Fenster nur akzeptierte Frames enthaelt', () => {
+  assert.ok(/acceptedStreak=holdKalman\?0:acceptedStreak\+1;/.test(html));
+  assert.ok(/const seedPending=!kalman\.seeded&&acceptedStreak<MEDIAN_WINDOW;/.test(html));
+  assert.ok(/\(holdKalman\|\|seedPending\)\?kalman\.x:kalman\.update\(/.test(html));
+  assert.ok((html.match(/ppfdMedian\.reset\(\);acceptedStreak=0;/g) || []).length >= 2, 'Zaehler wird nicht mit dem Median zurueckgesetzt');
+});
+t('Verdrahtung: vor dem ersten gueltigen Wert keine Zahl (gehaltene 0.0 ohne Messung)', () => {
+  assert.ok(/const hasValue=kalman\.seeded;/.test(html));
+  assert.ok(/isClipping\?'———':\(!hasValue\?'–––':/.test(html), 'Anzeige zeigt vor dem ersten Messwert eine Zahl');
+});
+
+console.log('== v3.4.27: Kalibrier-Fenster (Median und Spanne) ==');
+t('RollingMedian.spread: konstantes Fenster 0, Einzelausreisser zaehlt nicht, Sprung schon', () => {
+  const rm = new P.RollingMedian(31);
+  for (let i = 0; i < 31; i++) rm.push(100);
+  assert.strictEqual(rm.spread(), 0);
+  rm.push(200); rm.push(50);                       // zwei Ausreisser von 31
+  assert.strictEqual(rm.value(), 100, 'Median muss die Ausreisser ignorieren');
+  assert.strictEqual(rm.spread(), 0, '10.-90. Perzentil sieht zwei Ausreisser nicht');
+  const sprung = new P.RollingMedian(31);
+  for (let i = 0; i < 16; i++) sprung.push(100);
+  for (let i = 0; i < 15; i++) sprung.push(50);    // Licht hat sich im Fenster halbiert
+  assert.ok(sprung.spread() > 0.4, 'zweigipfliges Fenster nicht erkannt: ' + sprung.spread());
+});
+t('RollingMedian.spread: zu wenige Werte oder Median 0 -> null', () => {
+  const rm = new P.RollingMedian(31);
+  assert.strictEqual(rm.spread(), null);
+  rm.push(1); rm.push(2);
+  assert.strictEqual(rm.spread(), null);
+  const null0 = new P.RollingMedian(5); for (let i = 0; i < 5; i++) null0.push(0);
+  assert.strictEqual(null0.spread(), null);
+});
+t('Verdrahtung: kalibriert wird auf den Fenster-Median, nicht auf den Einzelframe', () => {
+  const i = html.indexOf('function applyCalibration()'), j = html.indexOf('localStorage.setItem(calibStorageKey()', i);
+  const body = html.slice(i, j);
+  assert.ok(/const rawCal=calibRawValue\(\);\s*if\(rawCal===null\)\{showError\(CALIB_RAW_WAIT_MSG\);return;\}/.test(body));
+  assert.ok(/rawSpread>CALIB_RAW_MAX_SPREAD/.test(body), 'Spannen-Pruefung fehlt');
+  assert.ok(!/raw:currentRawPPFDUncalibrated/.test(body), 'Kalibrierpunkt nimmt weiter den Einzelframe');
+  assert.ok(/if\(holdKalman\) calibRawMedian\.reset\(\); else calibRawMedian\.push\(currentRawPPFDUncalibrated\);/.test(html));
+  const resets = (html.match(/calibRawMedian\.reset\(\)/g) || []).length;
+  assert.ok(resets >= 10, 'Fenster wird nur an ' + resets + ' Stellen verworfen - ein Basiswechsel fehlt');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

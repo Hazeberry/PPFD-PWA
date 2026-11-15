@@ -243,7 +243,7 @@ prop('Punktreihenfolge aendert den Bereichsbefund nicht', [gRaw, gFitUndPunkte],
 
 prop('"ok" heisst wirklich innerhalb der Toleranz', [gRaw, gFitUndPunkte], (raw, x) => {
   const r = P.calibRangeStatus(raw, x.p1, x.p2, x.fit);
-  if (r.state !== 'ok' || !(raw > 0)) return true;   // raw<=0 ist der dokumentierte Sonderfall
+  if (r.state !== 'ok' || raw < 0) return true;      // nur raw<0 ist noch der dokumentierte Sonderfall (v3.4.27: 0 ist ein Messwert)
   return raw >= r.lo * P.CALIB_RANGE_LO - 1e-9 && raw <= r.hi * P.CALIB_RANGE_HI + 1e-9;
 });
 
@@ -259,7 +259,10 @@ prop('KOPPLUNG: "zero-zone" gilt genau dann, wenn die Pipeline auf 0 klemmt',
     // Bereich treffen, in dem processLoop() Math.max(0, raw*slope+offset)
     // auf 0 zieht. Waere sie zu eng, bliebe eine stille Null-Zone; waere sie
     // zu weit, warnte sie ueber Werte, die noch echte Messungen sind.
-    if (!(raw > 0)) return true;
+    // v3.4.27: raw = 0 gehoert dazu, sobald der Offset negativ ist (dann klemmt
+    // die Pipeline). Bei Offset >= 0 ist die Anzeige 0, weil der Rohwert 0 ist -
+    // das ist keine Klemmung und bleibt ausgenommen.
+    if (raw < 0 || (raw === 0 && !(x.fit.offset < 0))) return true;
     const angezeigt = Math.max(0, raw * x.fit.slope + x.fit.offset);
     const r = P.calibRangeStatus(raw, x.p1, x.p2, x.fit);
     return (r.state === 'zero-zone') === (angezeigt === 0);
