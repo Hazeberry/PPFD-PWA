@@ -25,7 +25,7 @@ return { srgbInverseEOTF, buildLinearLUT, Y_R, Y_G, Y_B, LIGHT_PROFILES,
   RollingMedian, MEDIAN_WINDOW, Q_GATE_HOLD, calibRangeStatus, CALIB_RANGE_LO, CALIB_RANGE_HI, Q_UNI_GATE_MIN_LIN, SIGNAL_CRIT_LIN, SettleTimer, readLiveExposure, heldReason,
   normalizeBlackLevel, isoCalibFactor, affineUncertaintyGain, propagateAffineUncertainty, AFFINE_GAIN_LIMIT, rampReactionObserved, verifyReactionObserved, confirmManualExposure,
   isoCalibFactorLegacy, isoModelShift, ISO_SHIFT_NOTICE,
-  exposureStatus, markUnquantifiable };`)();
+  exposureStatus, markUnquantifiable, blackLevelShift, sameBlackLevel, BL_SHIFT_NOTICE };`)();
 
 const W = 320, H = 240;
 const LUT = P.buildLinearLUT();
@@ -1418,8 +1418,8 @@ t('Keine pauschale Meldung beim Seitenstart mehr', () => {
   assert.ok(/isoLegacyAffects&&!isoLegacyToastShown&&settleStatus\.isWarmedUp/.test(html), 'Meldung haengt nicht an der betroffenen ISO');
 });
 t('Kalibrierpunkt speichert ISO und Belichtungszeit; Datenpunkt die Rohwert-Basis', () => {
-  assert.ok(/const pt=\{raw:rawCal,ref:refPPFD,iso:hardwareSettings\?\.iso\?\?null,exp:hardwareSettings\?\.exposureTime\?\?null\}/.test(html));
-  assert.ok(/isoModell:ISO_MODEL,/.test(html) && /'calibIsoModell','isoModell'/.test(html), 'isoModell fehlt in Snapshot oder CSV');
+  assert.ok(/const pt=\{raw:rawCal,ref:refPPFD,iso:hardwareSettings\?\.iso\?\?null,exp:hardwareSettings\?\.exposureTime\?\?null,bl:blackLevelLin\}/.test(html));
+  assert.ok(/isoModell:ISO_MODEL,/.test(html) && /'calibIsoModell','calibSchwarzwertFaktor','isoModell'/.test(html), 'isoModell fehlt in Snapshot oder CSV');
 });
 
 console.log('== v3.4.27: Platzhalter-Wert (Auto-Belichtung ohne gemeldete Belichtung/ISO) ==');
@@ -1543,12 +1543,53 @@ t('RollingMedian.spread: zu wenige Werte oder Median 0 -> null', () => {
 t('Verdrahtung: kalibriert wird auf den Fenster-Median, nicht auf den Einzelframe', () => {
   const i = html.indexOf('function applyCalibration()'), j = html.indexOf('localStorage.setItem(calibStorageKey()', i);
   const body = html.slice(i, j);
-  assert.ok(/const rawCal=calibRawValue\(\);\s*if\(rawCal===null\)\{showError\(CALIB_RAW_WAIT_MSG\);return;\}/.test(body));
-  assert.ok(/rawSpread>CALIB_RAW_MAX_SPREAD/.test(body), 'Spannen-Pruefung fehlt');
+  assert.ok(/const rc=calibRawCheck\(\);\s*if\(rc\.error\)\{showError\(rc\.error\);return;\}\s*const rawCal=rc\.raw;/.test(body));
+  const chk = html.slice(html.indexOf('function calibRawCheck()'), html.indexOf('function updateCalibRawDisplay()'));
+  assert.ok(/if\(raw===null\) return\{error:CALIB_RAW_WAIT_MSG\}/.test(chk), 'Wartesperre fehlt');
+  assert.ok(/sp>CALIB_RAW_MAX_SPREAD/.test(chk), 'Spannen-Pruefung fehlt');
   assert.ok(!/raw:currentRawPPFDUncalibrated/.test(body), 'Kalibrierpunkt nimmt weiter den Einzelframe');
   assert.ok(/if\(holdKalman\) calibRawMedian\.reset\(\); else calibRawMedian\.push\(currentRawPPFDUncalibrated\);/.test(html));
   const resets = (html.match(/calibRawMedian\.reset\(\)/g) || []).length;
   assert.ok(resets >= 10, 'Fenster wird nur an ' + resets + ' Stellen verworfen - ein Basiswechsel fehlt');
+});
+
+console.log('== v3.4.28: Schwarzwert als Teil der Rohwert-Basis ==');
+t('blackLevelShift: gleicher Schwarzwert oder Punkte ohne Angabe -> 1', () => {
+  assert.strictEqual(P.blackLevelShift([{ bl: 0.005 }], 0.005, 0.1), 1);
+  assert.strictEqual(P.blackLevelShift([{ raw: 50 }, null], 0.005, 0.1), 1, 'Punkte vor v3.4.28 nicht beurteilbar');
+  assert.strictEqual(P.blackLevelShift([], 0.005, 0.1), 1);
+});
+t('blackLevelShift: Schwarzwert nachtraeglich gemessen -> App liest niedriger, Effekt waechst im Dunkeln', () => {
+  // Kalibriert ohne Schwarzwert (0), danach 0,005 gemessen.
+  approx(P.blackLevelShift([{ bl: 0 }], 0.005, 0.2), 0.2 / 0.205, 1e-12, 'hell');
+  approx(P.blackLevelShift([{ bl: 0 }], 0.005, 0.02), 0.02 / 0.025, 1e-12, 'dunkel');
+  assert.ok(P.blackLevelShift([{ bl: 0 }], 0.005, 0.02) < P.blackLevelShift([{ bl: 0 }], 0.005, 0.2));
+});
+t('blackLevelShift: Schwarzwert geloescht -> App liest hoeher; Signal unter altem Schwarzwert -> Infinity', () => {
+  approx(P.blackLevelShift([{ bl: 0.005 }], 0, 0.1), 0.1 / 0.095, 1e-12);
+  assert.strictEqual(P.blackLevelShift([{ bl: 0.01 }], 0, 0.004), Infinity);
+});
+t('blackLevelShift: der Punkt mit der groessten Abweichung zaehlt', () => {
+  const f = P.blackLevelShift([{ bl: 0.004 }, { bl: 0 }], 0.005, 0.1);
+  approx(f, 0.1 / 0.105, 1e-12);
+});
+t('Meldeschwelle 1 %: hell und knapp daneben kein Hinweis', () => {
+  assert.ok(Math.abs(P.blackLevelShift([{ bl: 0 }], 0.001, 0.2) - 1) <= P.BL_SHIFT_NOTICE);
+  assert.ok(Math.abs(P.blackLevelShift([{ bl: 0 }], 0.005, 0.2) - 1) > P.BL_SHIFT_NOTICE);
+});
+t('sameBlackLevel: Gleitkomma-Rest zaehlt als gleich, fehlende Angabe nie', () => {
+  assert.strictEqual(P.sameBlackLevel(0.0051234, 0.0051234 + 1e-9), true);
+  assert.strictEqual(P.sameBlackLevel(0.005, 0.006), false);
+  assert.strictEqual(P.sameBlackLevel(undefined, 0), false);
+});
+
+console.log('== v3.4.28: Einheiten in Grossbuchstaben-Beschriftungen ==');
+t('REGRESSION: kein "µmol" in einer per CSS gross gesetzten Beschriftung (wird zu "ΜMOL" = mmol)', () => {
+  assert.ok(/\.unit\{text-transform:none\}/.test(html), 'Klasse .unit fehlt');
+  for (const m of html.matchAll(/<label[^>]*>([\s\S]*?)<\/label>/g)) {
+    const ohneUnit = m[1].replace(/<span class="unit">[\s\S]*?<\/span>/g, '');
+    assert.ok(!/µ/.test(ohneUnit), 'Beschriftung ohne .unit: ' + m[1]);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

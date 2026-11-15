@@ -19,7 +19,7 @@ Auf dem Smartphone: Seite öffnen → Browser-Menü → **„Zum Startbildschirm
 2. **Kamera aktivieren und einschwingen lassen** (300 Frames, je nach Bildrate 5–10 s): Kamera, Bildverarbeitung und Lichtquellen-Erkennung stellen sich nach dem Start ein. Erst danach erscheint der Messwert — und erst dann lässt sich kalibrieren oder ein Trainingspunkt speichern. Eine Temperatur misst die App dabei nicht; bis v3.4.17 hieß diese Phase irreführend „Aufwärmen".
 3. **Kalibrieren — auch mit Kosinus-Korrektor, und zwar mit genau dem Diffusor, mit dem du misst** (einmalig pro Kamera und Lichtprofil): Referenz-PAR-Meter danebenhalten, Wert eingeben. Jeder Diffusor schwächt das Licht um einen eigenen Faktor, den die App nicht kennen kann; ohne Kalibrierung bleibt die angezeigte Unsicherheit deshalb bei rund ±72 % — mit Korrektor genauso wie mit Papier. Wechselst du den Diffusor (Papier ↔ Kosinus-Korrektor, andere Halterung), im Kalibrier-Dialog erst **Reset**, dann neu kalibrieren (siehe „Bekannte Grenzen", Punkt 2). Optional **Zwei-Punkt-Kalibrierung** bei deutlich anderer Helligkeit — ersetzt die reine Steigung durch `Steigung·raw + Offset`. Das ist eine Gerade: Sie trifft beide Punkte, eine gekrümmte Kennlinie von Sensor oder Bildverarbeitung gleicht sie aber nur näherungsweise zwischen ihnen aus. **Beim Kalibrieren ruhig halten:** Übernommen wird der Median der letzten rund 30 Frames (0,5–1 s), nicht ein Einzelbild; schwankt der Wert in dieser Zeit stark oder steht der Software-Gain-Regler nicht auf 1,00×, lehnt die App die Kalibrierung mit einer Meldung ab. Die App merkt sich die Rohwerte der Stützstellen und **warnt, sobald du außerhalb des kalibrierten Bereichs misst** (z. B. bei stark abweichender Dimmstufe).
 
-Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pixelgenau und **kanalweise (R, G, B)** pro Kamera (seit v3.4.22; ältere Skalar-Referenzen bleiben lesbar).
+Optional: **Schwarzwert messen** (Linse abdecken) korrigiert den Dunkeloffset pixelgenau und **kanalweise (R, G, B)** pro Kamera (seit v3.4.22; ältere Skalar-Referenzen bleiben lesbar). **Vor dem Kalibrieren messen, nicht danach:** Der Schwarzwert gehört zur Rohwert-Basis. Wird er nach dem Kalibrieren neu gemessen oder gelöscht, meldet die App das seit v3.4.28 und nennt in der Unsicherheitszeile, um wie viel sich die Werte verschieben (bei schwachem Licht deutlich, bei hellem kaum).
 
 **Warum Kosinus-Korrektor?** PPFD ist eine flächenbezogene Größe — die Sensorantwort muss dem Lambertschen Kosinusgesetz folgen. Papier streut und dämpft zwar, besitzt aber keine definierte Kosinus-Richtcharakteristik; die Winkelabhängigkeit bleibt unbestimmt und gerätespezifisch. Genau diese Eigenschaft beschreibt die Norm **ISO/CIE 19476** über den Güteindex **f₂** (directional response, Kosinusgesetz-Abweichung) — formal für Beleuchtungsstärke-/Leuchtdichtemesser, aber dasselbe Konzept, mit dem auch PAR-Sensoren ihre Kosinus-Korrektur spezifizieren.
 
@@ -90,11 +90,13 @@ Im schwachen Licht (Zeltrand, Dämmerung) zeigt das Gerät dann 0. Der Fit ist d
 **Erkennen:** Seit v3.4.10 meldet die App das selbst — unterhalb der Schwelle erscheint unter dem Messwert eine gelbe Warnzeile: „⚠ Unter der Null-Zone der Kalibrierung (ab Rohwert X geklemmt) – die Anzeige ist hier keine Messung". Zusätzlich zeigt der Kalibrier-Dialog den Offset mit Vorzeichen; steht dort ein Minus, ist der Betrag durch die Steigung die Schwelle.
 **Umgehen:** Für Messungen im unteren Bereich die Ein-Punkt-Kalibrierung benutzen — sie ist konstruktionsbedingt offsetfrei. Achtung, das erfordert **Zurücksetzen**: ein neuer Punkt landet sonst als zweiter Stützpunkt und der Offset ist wieder da (siehe Punkt 2).
 
-### 2. Der erste Kalibrierpunkt ist unlöschbar
+### 2. Ein neuer Kalibrierpunkt ersetzt nur Punkt 2
 
 Nach dem ersten gespeicherten Punkt ersetzt jede weitere Kalibrierung nur noch `p2`. Ein veralteter `p1` — etwa aus einem anderen Diffusor-Aufbau — zieht die Gerade schief, während die Anzeige „(2 Punkte)" nach mehr Genauigkeit aussieht.
 
-**Umgehen:** Bei geändertem optischem Aufbau (Wechsel Papier ↔ Kosinus-Korrektor, andere Halterung) erst **Zurücksetzen**, dann neu kalibrieren. Ein bloßes Nachkalibrieren behält den alten ersten Punkt.
+**Seit v3.4.28 lassen sich die Punkte einzeln löschen:** Der Kalibrier-Dialog zeigt beide mit Rohwert und Referenz, jeder hat einen eigenen „Löschen“-Knopf. Bleibt einer übrig, wird er Punkt 1 (reine Steigung, offsetfrei). Bis v3.4.27 war der erste Punkt nur über **Zurücksetzen** loszuwerden, und das räumt alle Profile der Kamera. Zwei Fälle verwirft die App selbst, statt zu mischen: einen Punkt aus der alten ISO-Kurve (vor v3.4.22) und, seit v3.4.28, einen Punkt, der mit einem anderen Schwarzwert erhoben wurde.
+
+**Umgehen** (für ältere Kalibrierungen ohne einzeln gespeicherte Punkte): Bei geändertem optischem Aufbau (Wechsel Papier ↔ Kosinus-Korrektor, andere Halterung) erst **Zurücksetzen**, dann neu kalibrieren.
 
 **Was Zurücksetzen räumt (seit v3.4.8):** alle Lichtprofile der **aktuellen Kamera**, nicht nur das gerade gewählte — ein geänderter Aufbau entwertet jedes Profil gleichermaßen, der Diffusor sitzt vor dem Sensor. Bis v3.4.7 blieb unter den übrigen Profilen still die Kalibrierung des alten Aufbaus stehen und lieferte beim nächsten Profilwechsel unbemerkt falsche Werte. Die **andere Kamera** wird nicht mitgeräumt (eigener Sensor) — liegt dort noch etwas, sagt die Meldung nach dem Zurücksetzen, wie viel.
 
@@ -183,7 +185,7 @@ node tools/auswertung.js export.csv --json                 # maschinenlesbar
 
 **Bewusst noch nicht drin:** flexiblere Modelle (neuronales Netz, Gradient Boosting). Solange die einfachen nicht gemessen sind, gibt es nichts, wogegen sich ein flexibleres behaupten müsste — und die bräuchten Python-Abhängigkeiten. Gruppierung, Metrik und Gegenprobe sind dafür schon da; ein weiteres Modell ist ein Eintrag in `MODELLE`.
 
-**Gemeinsame Rohwert-Basis.** `rawPPFDUncalibrated` enthält zwei Dinge, die nichts mit der Szene zu tun haben: die ISO-Kurve der App (bis v3.4.21 Stufen, danach stetig — bei ISO 401–1599 bis zu 8 % Unterschied) und den Software-Gain-Regler. Die Auswertung bringt die Punkte auf eine gemeinsame Basis, bevor sie Modelle vergleicht: `gainMultiplier` wird aus dem Rohwert geteilt, und Punkte mit der alten ISO-Kurve werden über die mitgespeicherte `iso` exakt umgerechnet. Welche Kurve ein Punkt hatte, steht erst seit v3.4.27 im Datensatz (`isoModell`). Davor lässt es sich nur teilweise erschließen: Ein Zeitstempel vor der Umstellung heißt sicher „alt“; ein Punkt aus der Zeit danach ohne Kennung kann aus v3.4.22–26 stammen (neue Kurve) oder von einer noch nicht aktualisierten Installation (alte). Solche Punkte rechnet die Auswertung nicht um — liegt ihre ISO zwischen 401 und 1599, lässt sie sie im Modellvergleich weg, statt bis zu 8 % Versatz hineinzutragen. Der Bericht nennt jeweils die Zahl der betroffenen Punkte. Seit v3.4.27 speichert die App Trainingspunkte ohnehin nur noch bei neutralem Regler und nur, wenn der Wert eine Messung ist (kein Platzhalter, siehe „Bekannte Grenzen“, Punkt 6).
+**Gemeinsame Rohwert-Basis.** `rawPPFDUncalibrated` enthält zwei Dinge, die nichts mit der Szene zu tun haben: die ISO-Kurve der App (bis v3.4.21 Stufen, danach stetig — bei ISO 401–1599 bis zu 8 % Unterschied) und den Software-Gain-Regler. Die Auswertung bringt die Punkte auf eine gemeinsame Basis, bevor sie Modelle vergleicht: `gainMultiplier` wird aus dem Rohwert geteilt, und Punkte mit der alten ISO-Kurve werden über die mitgespeicherte `iso` exakt umgerechnet. Welche Kurve ein Punkt hatte, steht erst seit v3.4.27 im Datensatz (`isoModell`). Davor lässt es sich nur teilweise erschließen: Ein Zeitstempel vor der Umstellung heißt sicher „alt“; ein Punkt aus der Zeit danach ohne Kennung kann aus v3.4.22–26 stammen (neue Kurve) oder von einer noch nicht aktualisierten Installation (alte). Solche Punkte rechnet die Auswertung nicht um — liegt ihre ISO zwischen 401 und 1599, lässt sie sie im Modellvergleich weg, statt bis zu 8 % Versatz hineinzutragen. Der Bericht nennt jeweils die Zahl der betroffenen Punkte. Seit v3.4.27 speichert die App Trainingspunkte ohnehin nur noch bei neutralem Regler und nur, wenn der Wert eine Messung ist (kein Platzhalter, siehe „Bekannte Grenzen“, Punkt 6). Seit v3.4.28 ist `rawPPFDUncalibrated` eines Trainingspunkts wie bei der Kalibrierung der Median der letzten rund 30 Frames (`rawFenster` = Fenstergröße, Einzelbild in `rawPPFDFrame`); ältere Punkte sind Einzelbilder. Neu im Export sind außerdem `isoGesteuert` (hat die App im Manuell-Modus die ISO selbst gesetzt?) und `calibSchwarzwertFaktor`.
 
 Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, im Modellvergleich nicht: Ihre Gruppe ist unbekannt. Eine von einem deutschen Excel neu gespeicherte Datei (Semikolon, Dezimalkomma) wird erkannt.
 
@@ -193,8 +195,8 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 |---|---|
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
-| `tests/test_pipeline.js` | Node-Regressions-Harness, **184 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_messablauf.js` | Ablauf-Harness, **19 Tests**: das echte Skript gegen simulierte Kamera, Frames und virtuelle Uhr — Kamerastart, Belichtungs-Tuning, Einschwingen, Messschleife, Kalibrierung und Trainingspunkt als ganzer Ablauf |
+| `tests/test_pipeline.js` | Node-Regressions-Harness, **191 Tests** gegen den extrahierten Pure-Pipeline-Block |
+| `tests/test_messablauf.js` | Ablauf-Harness, **30 Tests**: das echte Skript gegen simulierte Kamera, Frames und virtuelle Uhr — Kamerastart, Belichtungs-Tuning, Einschwingen, Messschleife, Kalibrierung und Trainingspunkt als ganzer Ablauf |
 | `tests/test_calib_storage.js` | Integrations-Harness, **49 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
 | `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **12 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln, Aufräumen nur eigener Caches) |
@@ -209,12 +211,12 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 ## Tests
 
 ```bash
-node tests/test_pipeline.js         # 184/184 erwartet (kein Browser nötig)
+node tests/test_pipeline.js         # 191/191 erwartet (kein Browser nötig)
 node tests/test_calib_storage.js    # 49/49 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      # 12/12 erwartet
 node tests/test_auswertung.js       # 22/22 erwartet
-node tests/test_messablauf.js       # 19/19 erwartet
+node tests/test_messablauf.js       # 30/30 erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
 node tests/test_properties.js       # 34/34 erwartet

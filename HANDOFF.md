@@ -1,25 +1,27 @@
-# Handoff: offene Punkte nach v3.4.27
+# Handoff: offene Punkte
 
-Stand: Branch `claude/ppfd-calibration-validation-urvwbh`, PR #26 (noch nicht gemerged). Basis ist `main` mit v3.4.26 (PR #25).
+Erstellt nach v3.4.27 (PR #26), Stand jetzt **v3.4.28**. CI läuft seit PR #27/#28 (`CI.md`).
 
-Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum. Was in v3.4.22–27 behoben ist, steht in den PR-Beschreibungen von #25 und #26 sowie im README; hier geht es nur um das, was noch offen ist. Zeilennummern beziehen sich auf `index.html` im Stand dieses Commits und verschieben sich mit jeder Änderung – im Zweifel nach dem Funktionsnamen suchen.
+Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum – und seit v3.4.28 auch, was davon inzwischen erledigt oder entschieden ist. Was in v3.4.22–28 behoben ist, steht in den PR-Beschreibungen und im README. Zeilennummern beziehen sich auf `index.html` zum Zeitpunkt des Schreibens und verschieben sich mit jeder Änderung – im Zweifel nach dem Funktionsnamen suchen.
 
 ## Kurzüberblick
 
-| # | Punkt | Art | Braucht |
+| # | Punkt | Art | Stand |
 |---|---|---|---|
-| 1 | Keine Prüfung mit echter Handykamera | Validierung | Geräte |
-| 2 | Konstanten und Gewichte unbelegt | Validierung | PAR-Meter, ≥ 10 Sitzungen |
-| 3 | −2-%-Stufe bei 1/30 s | Messfehler (klein) | Entscheidung |
-| 4 | Schwarzwert nach dem Kalibrieren | Messfehler (klein) | Umsetzung |
-| 5 | Manuell-Nachweis in der Rampe | Fehlklassifikation (selten) | Entscheidung + Gerät |
-| 6 | Manuell-Modus ohne ISO-Steuerung | ungeklärt | Gerät |
-| 7 | Trainingspunkte sind Einzelbilder | Inkonsistenz | Umsetzung |
-| 8 | Schwellwerte ohne Datenbasis | Annahmen | Daten |
-| 9 | Zwei-Punkt-Gerade ist linear | Modellgrenze | Daten |
-| 10 | Bekannte Grenzen 2–5 im README | Produktentscheidungen | Entscheidung |
-| 11 | Auswertung: Zuordnung alter Punkte | Datenqualität | – |
-| 12 | Browser-Test liegt nicht im Repo | Werkzeug | Umsetzung |
+| 1 | Keine Prüfung mit echter Handykamera | Validierung | **offen** – braucht Geräte |
+| 2 | Konstanten und Gewichte unbelegt | Validierung | **offen** – braucht PAR-Meter, ≥ 10 Sitzungen |
+| 3 | −2-%-Stufe bei 1/30 s | Messfehler (klein) | entschieden: bleibt, bis Referenzdaten vorliegen |
+| 4 | Schwarzwert nach dem Kalibrieren | Messfehler (klein) | **erledigt** (v3.4.28) |
+| 5 | Manuell-Nachweis in der Rampe | Fehlklassifikation (selten) | entschieden: erst nach Gerätetest (Punkt 1) |
+| 6 | Manuell-Modus ohne ISO-Steuerung | ungeklärt | gekennzeichnet (v3.4.28); Klärung braucht Gerät |
+| 7 | Trainingspunkte sind Einzelbilder | Inkonsistenz | **erledigt** (v3.4.28) |
+| 8 | Schwellwerte ohne Datenbasis | Annahmen | **offen** – braucht Daten |
+| 9 | Zwei-Punkt-Gerade ist linear | Modellgrenze | **offen** – braucht Daten |
+| 10 | Bekannte Grenzen 2–5 im README | Produktentscheidungen | Grenze 2 **erledigt** (v3.4.28); 3–5 offen |
+| 11 | Auswertung: Zuordnung alter Punkte | Datenqualität | abgeschlossen – mehr ist aus alten Daten nicht zu holen |
+| 12 | Browser-Test liegt nicht im Repo | Werkzeug | **erledigt** (PR #27/#28) |
+
+Nebenbei in v3.4.28 behoben: Die Feldbeschriftungen setzten „µmol“ per CSS in Großbuchstaben, daraus wurde „ΜMOL“ – gelesen als mmol, Faktor 1000 beim Eintippen der Referenz.
 
 ---
 
@@ -60,13 +62,20 @@ Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum. Was in v3.
 
 **Empfehlung:** (a), bis Referenzdaten zeigen, ob überhaupt ein belichtungsabhängiger Faktor nötig ist. Nur zusammen mit Punkt 2 anfassen.
 
+**Entscheidung (v3.4.28):** (a) – bleibt. Wiedervorlage mit Punkt 2.
+
 ## 4. Schwarzwert messen oder löschen nach dem Kalibrieren
 
 **Wo:** `measureBlackLevel`, `resetBlackLevel`; Kalibrierpunkte in `applyCalibration`.
 
 **Problem:** Der Schwarzwert wird von jedem Pixel abgezogen, bevor der Rohwert entsteht. Misst oder löscht man ihn nach dem Kalibrieren, ändert sich die Rohwert-Basis, die Kalibrierung gilt aber unverändert weiter – ohne Hinweis. Der Effekt ist klein bei hellem Licht und wird bei schwachem Licht relevant (Schwarzwert-Grenze 0,02 linear gegen ein Signal von z. B. 0,04).
 
-**Umsetzungsvorschlag:** Den aktiven Schwarzwert (Y-gewichtet, `blackLevelLin`) mit jedem Kalibrierpunkt speichern. Weicht der aktuelle um mehr als einen Bruchteil davon ab, in der Unsicherheitszeile „Schwarzwert seit Kalibrierung geändert – neu kalibrieren“ zeigen. Alternativ beim Messen/Löschen des Schwarzwerts eine Bestätigung verlangen, wenn eine Kalibrierung existiert. Aufwand klein; Test in `test_messablauf.js` ergänzen.
+**Erledigt (v3.4.28):**
+- Jeder Kalibrierpunkt speichert den Schwarzwert (`bl`, Y-gewichtet).
+- Wird danach ein Schwarzwert gemessen oder gelöscht, kommt eine Meldung. Die Unsicherheitszeile nennt die Verschiebung, sobald sie 1 % übersteigt („· Schwarzwert seit Kalibrierung geändert: −x % (neu kalibrieren)“, `blackLevelShift`, `BL_SHIFT_NOTICE`). Export: `calibSchwarzwertFaktor`.
+- Ein zweiter Kalibrierpunkt mit anderem Schwarzwert verwirft den ersten, statt zwei Basen zu mischen (wie beim ISO-Modell).
+
+**Bleibt:** Kalibrierungen von vor v3.4.28 haben keinen gespeicherten Schwarzwert; für sie gibt es nur die Meldung beim Ändern, keine Größenangabe. Die Größe ist eine Näherung über die Y-Helligkeit, nicht kanalweise mit den PAR-Gewichten.
 
 ## 5. Manuell-Nachweis in der Rampe kann von der Kamera-Automatik kommen
 
@@ -80,13 +89,17 @@ Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum. Was in v3.
 
 **Empfehlung:** Erst nach Punkt 1 entscheiden. Wenn echte Geräte nie in diesen Fall laufen, ist die Startzeit wertvoller.
 
+**Entscheidung (v3.4.28):** so übernommen – keine Änderung vor dem Gerätetest. Beim Gerätetest auf `rampEvidence` achten: Steht im Debug-Trail eine Rampe ohne `(verify…)`, und meldet das Gerät `exposureMode: continuous`, ist das genau dieser Fall.
+
 ## 6. Manuell-Modus ohne ISO-Steuerung
 
 **Wo:** `applyHardwareConstraints` (`if(cap.iso) constraints.iso=…`), `exposureStatus`.
 
 **Problem:** Bietet eine Kamera manuelle Belichtungszeit, aber keine ISO-Steuerung an, setzt die App keine ISO. Meldet sie die ISO auch nicht, rechnet die Formel mit dem Startwert (`getSettings()` beim Start, sonst 100). Ob eine Kamera in diesem Zustand die ISO selbst nachregelt, ist **ungeprüft**. Wenn ja, ist der Wert dort ähnlich lichtunabhängig wie im Platzhalter-Zustand; die App behandelt es aber nur als Hinweis („· ISO nicht gemeldet“), Kalibrieren bleibt möglich.
 
-**Weg:** An einem Gerät mit diesem Profil (Test-Kamera von Chromium hat es: Manuell-Modus, keine ISO) mit echtem Licht prüfen, ob der Wert bei halbem Licht auf etwa die Hälfte fällt. Wenn nicht: `exposureStatus` so ändern, dass `!isoReported && !constraints.iso` auch im Manuell-Modus als Platzhalter gilt. Dazu müsste `applyHardwareConstraints` festhalten, ob die ISO gesetzt wurde (z. B. `result.isoControlled`).
+**Weg:** An einem Gerät mit diesem Profil (Test-Kamera von Chromium hat es: Manuell-Modus, keine ISO) mit echtem Licht prüfen, ob der Wert bei halbem Licht auf etwa die Hälfte fällt. Wenn nicht: `exposureStatus` so ändern, dass `!isoReported && !isoControlled` auch im Manuell-Modus als Platzhalter gilt.
+
+**Stand (v3.4.28):** gekennzeichnet, Verhalten unverändert. `applyHardwareConstraints` hält `isoControlled` fest (hat die App die ISO gesetzt?), der Export führt es als `isoGesteuert` (1/0). Die Frage lässt sich damit an Trainingsdaten beantworten: Punkte mit `hardwareMode=manuell`, `isoGemeldet=0`, `isoGesteuert=0` bei mehreren Helligkeiten – folgt `rawPPFDUncalibrated` der Referenz proportional, regelt die Kamera nicht nach. Die Umstellung auf „Platzhalter“ wäre danach eine Zeile in `exposureStatus`; der CI-Browser-Test (Chromium-Test-Kamera hat genau dieses Profil) müsste dann mit angepasst werden.
 
 ## 7. Trainingspunkte sind weiterhin Einzelbilder
 
@@ -94,7 +107,7 @@ Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum. Was in v3.
 
 **Problem:** Dieselben Gründe, die bei der Kalibrierung zum Median geführt haben (Ausreißer-Frames, Abfrage-Verzug der Belichtung im Software-Modus, PWM-Flackern), gelten für Trainingspunkte. Für die Auswertung ist es weniger kritisch, weil viele Punkte gemittelt werden; ein einzelner falscher Punkt verzerrt aber den Modellvergleich einer kleinen Sitzung.
 
-**Umsetzungsvorschlag:** `rawPPFDUncalibrated` im Trainingspunkt durch `calibRawValue()` ersetzen (mit denselben Sperren: Fenster voll, Spanne ≤ `CALIB_RAW_MAX_SPREAD`) und den Einzelframe zusätzlich als `rawPPFDFrame` behalten. Die Farbanteile (`avgR_lin` …) bleiben Einzelbild-Werte; für die Chromatizität reicht das. `tools/auswertung.js` braucht keine Änderung, wenn der Spaltenname gleich bleibt – dann aber im CSV kennzeichnen, ab welcher Version es der Median ist.
+**Erledigt (v3.4.28):** `saveTrainPoint` nutzt dieselbe Prüfung wie die Kalibrierung (`calibRawCheck`: Fenster voll, Spanne ≤ `CALIB_RAW_MAX_SPREAD`). `rawPPFDUncalibrated` ist der Median, der Einzelframe steht in `rawPPFDFrame`, `rawFenster` (= 31) kennzeichnet den Median; Punkte ohne das Feld sind Einzelbilder. Farbanteile, Güte und Unsicherheit bleiben Werte des letzten Frames. `tools/auswertung.js` liest weiter `rawPPFDUncalibrated` und brauchte keine Änderung.
 
 ## 8. Schwellwerte ohne Datenbasis
 
@@ -107,6 +120,7 @@ Alle in v3.4.22–27 neu gesetzt, begründet, aber nicht aus Messdaten abgeleite
 | `CALIB_RAW_MAX_SPREAD` | 0,20 | Sperre „Messwert schwankt noch“ | zu klein: unter PWM-LEDs nie kalibrierbar |
 | `ISO_SHIFT_NOTICE` | 0,005 | ab hier Warnung zur Altkalibrierung | unkritisch |
 | `rampReactionObserved` / `verifyReactionObserved` | > 20 % bzw. > 2 Einheiten | Manuell-Beleg | zu groß: quantisierende Treiber gelten nicht als manuell |
+| `BL_SHIFT_NOTICE` (v3.4.28) | 0,01 | ab hier Hinweis „Schwarzwert seit Kalibrierung geändert“ | unkritisch |
 
 `Q_GATE_HOLD` (0,35) und die Q-Rampen sind älter und im Code ausführlich begründet, aber ebenso nicht gegen Daten geprüft.
 
@@ -122,7 +136,7 @@ Alle in v3.4.22–27 neu gesetzt, begründet, aber nicht aus Messdaten abgeleite
 
 Weiterhin offen, jeweils mit Analyse im README unter „Bekannte Grenzen“:
 
-- **2. Der erste Kalibrierpunkt ist unlöschbar** – jeder neue Punkt ersetzt nur `p2`. Abhilfe heute: Zurücksetzen. Eine Lösung wäre, `p1`/`p2` getrennt löschbar zu machen oder Punkte als Liste mit Zeitstempel zu führen.
+- **2. Der erste Kalibrierpunkt ist unlöschbar** – **erledigt (v3.4.28):** Der Kalibrier-Dialog listet die Punkte mit Rohwert und Referenz, jeder ist einzeln löschbar (`renderCalibPoints`, `deleteCalibPoint`); der verbleibende wird Punkt 1. Ältere Kalibrierungen ohne einzeln gespeicherte Punkte verweisen auf „Reset“. Ein neuer Punkt ersetzt weiterhin Punkt 2.
 - **3. Q kennt keinen Belichtungs-Faktor** – eine Sitzung dauerhaft außerhalb des Zielbands meldet Q = 100 %.
 - **4. Zielband prüft nur den Mittelwert** – Übersteuerung kann innerhalb des Bands landen; seit v3.4.14 korrigiert der Manuell-Modus nach ~1,5–3 s selbst. Nächste Stufe wäre, das Band an den Clipping-Anteil zu koppeln.
 - **5. Unsicherheits-Boden ±14 %** – Folge von `u_cal` = `u_profile` = 0,05; ändert sich nur mit belastbar kleineren Profil-Unsicherheiten (Punkt 2).
@@ -135,7 +149,9 @@ Weiterhin offen, jeweils mit Analyse im README unter „Bekannte Grenzen“:
 
 **Grenzen:** Die Zuordnung hängt an der Uhr des Geräts. Punkte zwischen Commit und Auslieferung (Merge auf `main` um 19:11 UTC) sind in der Praxis alt, zählen aber als unklar – konservativ, kostet nur Punkte. Mehr ist aus den alten Daten nicht herauszuholen.
 
-## 12. Browser-Test liegt nicht im Repo
+## 12. Browser-Test liegt nicht im Repo – erledigt
+
+**Erledigt:** `tests/test_browser.js` mit Workflow `.github/workflows/test.yml` (PR #27), Diagnose-Artefakte und Wiederholungsläufe (PR #28). Einzelheiten in `CI.md`. Der folgende Abschnitt ist der ursprüngliche Stand.
 
 **Stand:** Der Lauf in headless Chromium (Playwright, Test-Kamera mit `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream`, `permissions:['camera']`, lokaler HTTP-Server für Service Worker) war ein Einmal-Skript außerhalb des Repos. Er hat zwei Fehler gefunden, die die Node-Harnesses nicht sahen (DLI im Platzhalter-Zustand, Halt-Abzeichen verdeckte den Platzhalter).
 
@@ -149,4 +165,5 @@ Weiterhin offen, jeweils mit Analyse im README unter „Bekannte Grenzen“:
 - **Reine Funktionen** gehören zwischen `/* ===PURE-PIPELINE-BEGIN=== */` und `…-END`, sonst sieht `test_pipeline.js` sie nicht. Neue Funktionen dort in die Export-Liste oben im Test eintragen.
 - **Ablauf prüfen** statt nur Funktionen: `tests/test_messablauf.js` fährt das echte Skript mit simulierter Kamera, Frames und Uhr. Neue Fehler im Zusammenspiel dort als Regressionstest anlegen; gegen den Stand vor dem Fix laufen lassen (`node tests/test_messablauf.js pfad/zu/alter/index.html`), um zu sehen, dass der Test den Fehler wirklich fängt.
 - **Rohwert-Basis:** Alles, was `rawPPFDUncalibrated` verändert (Konstanten, ISO-/Belichtungsfaktoren, Schwarzwert, PAR-Gewichte), entwertet gespeicherte Kalibrierungen und mischt Trainingsdaten. Dann das Modell-Kennzeichen (`ISO_MODEL`, CSV `isoModell`) hochzählen und `tools/auswertung.js` nachziehen.
-- **Tests:** `npm install` einmalig, dann `npm test` (8 Suites, 351 Tests im Stand dieses Commits). Ohne Abhängigkeiten: `npm run test:nodeps`.
+- **Tests:** `npm install` einmalig, dann `npm test` (8 Suites, 369 Tests in v3.4.28). Ohne Abhängigkeiten: `npm run test:nodeps`. Browser: `npx playwright install --with-deps chromium`, dann `npm run test:browser` (lokal mit vorhandenem Chromium: `CHROMIUM_EXECUTABLE_PATH=…`). Beides läuft in der CI (`CI.md`).
+- **Test-Attrappe `test_messablauf.js`:** `requestAnimationFrame` ist seit v3.4.28 eine Warteschlange wie im Browser (vorher verdrängte jeder weitere rAF-Aufruf – etwa die Balken-Animation der Schwarzwertmessung – die Messschleife), Elemente haben eine Kindliste (`kinder`).
