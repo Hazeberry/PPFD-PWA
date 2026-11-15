@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.26</title>
+<title>PPFD Meter Pro v3.4.27</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,7 +94,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.26</span>
+  <span class="app-title">PPFD Meter Pro v3.4.27</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -197,7 +197,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.26 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.27 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -223,6 +223,8 @@
     Manuell-Nachweis nur über gemeldete Belichtungszeit · Unsicherheit nahe Kalibrier-Nullpunkt „nicht quantifizierbar“ · Altkalibrierung (altes ISO-Modell) gekennzeichnet<br>
     Verify-Nachweis nur über gemeldete Belichtungszeit · Null-Zone auch bei Rohwert 0 erkannt<br>
     „Belichtung/ISO nicht gemeldet“ auch im Manuell-Modus · Manuell nur mit Beleg (kein stiller Durchlass ohne Modus-Meldung)<br>
+    Anzeige startet beim Messwert statt bei 0 · Platzhalter-Wert (Auto-Belichtung ohne Meldung) abgedunkelt, nicht kalibrierbar · Kalibrierung auf den Median der letzten Sekunde, nur bei neutralem Software-Gain<br>
+    Altkalibrierung nur noch bei betroffener ISO gemeldet · Null-Zone auch bei schwarzem Frame · Export nennt Rohwert-Basis und ob Belichtung/ISO gemeldet waren<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -239,7 +241,7 @@
 <div class="modal-overlay" id="calibModal">
   <div class="modal">
     <h3>🔧 PPFD-Kalibrierung</h3>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">Referenz-PAR-Meter daneben halten und Wert eingeben um den Spektral-Faktor zu justieren. <strong>Optional:</strong> zweiten Punkt bei deutlich anderer Helligkeit setzen (Zwei-Punkt-Kalibrierung mit Offset, kompensiert Sensor-Nichtlinearität).<br><br><strong>Mit genau dem Diffusor kalibrieren, mit dem du misst</strong> – empfohlen ist ein Kosinus-Korrektor, und auch der muss kalibriert werden. Nach einem Wechsel (Papier ↔ Kosinus-Korrektor, andere Halterung) erst <strong>Reset</strong>, dann neu kalibrieren.</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">Referenz-PAR-Meter daneben halten und Wert eingeben um den Spektral-Faktor zu justieren. <strong>Optional:</strong> zweiten Punkt bei deutlich anderer Helligkeit setzen (Zwei-Punkt-Kalibrierung: gleicht Steigung und Offset an – eine gekrümmte Kennlinie des Sensors oder der Bildverarbeitung korrigiert sie nur näherungsweise zwischen den beiden Punkten).<br><br><strong>Mit genau dem Diffusor kalibrieren, mit dem du misst</strong> – empfohlen ist ein Kosinus-Korrektor, und auch der muss kalibriert werden. Nach einem Wechsel (Papier ↔ Kosinus-Korrektor, andere Halterung) erst <strong>Reset</strong>, dann neu kalibrieren.</p>
     <div class="calib-input-group">
       <label>Referenz-PPFD (µmol·m⁻²·s⁻¹)</label>
       <input type="number" id="refPPFD" placeholder="z.B. 450" step="1">
@@ -296,8 +298,12 @@ const Y_R=0.2126,Y_G=0.7152,Y_B=0.0722;
 // weil genau dieser Versatz profilabhaengig ist (s. calibStorageKey()).
 // Eine echte Neubestimmung braucht Referenzmessungen je Quellenklasse gegen
 // ein PAR-Meter, nicht Literaturwerte aus der Lux-Welt.
+// v3.4.27: Die Hinweistexte (note) behaupten keine Absicherung mehr. "Faktor gut
+// abgesichert" (Sonnenlicht) und "vergleichsweise praezise" (HPS) standen neben
+// dem Kommentar oben, der erklaert, warum genau diese Faktoren NICHT gegen die
+// Literatur pruefbar sind. u (nominale Unsicherheit) bleibt eine Annahme.
 const LIGHT_PROFILES={
-  SUNLIGHT:{r:0.33,g:0.34,factor:0.0185,u:0.05,name:'Sonnenlicht',note:'Tageslicht (D65), auch bewölkt. Faktor gut abgesichert.',detect:true},
+  SUNLIGHT:{r:0.33,g:0.34,factor:0.0185,u:0.05,name:'Sonnenlicht',note:'Tageslicht (D65), auch bewölkt. Faktor ist ein Richtwert – für diese Kamerakette nicht gegen ein PAR-Meter geprüft.',detect:true},
   WHITE_LED:{factor:0.0185,u:0.08,name:'Weiße LED',note:'Weiße LEDs inkl. moderner Grow-Lampen (Weißlicht-Basis). Einen 660-nm-Rot-Boost bewertet die Kamera deutlich zu schwach – ohne Kalibrierung fällt der Wert unter solchen Lampen zu niedrig aus.',detect:false},
   // v3.4.8: Schluessel 'LED_GROW' bleibt bestehen - calibStorageKey() bindet
   // gespeicherte Kalibrierungen daran, Umbenennen des Keys wuerde sie
@@ -305,7 +311,7 @@ const LIGHT_PROFILES={
   // Geaendert werden nur name/note und detect. Praezedenzfall: METAL_HALIDE
   // ist seit je detect:false und manuell waehlbar.
   LED_GROW:{r:0.45,g:0.25,factor:0.0155,u:0.10,name:'Rot/Blau-Panel (Blurple)',note:'Ältere Rot/Blau-Panels. Dieses Profil ändert den Messwert selbst unter Blurple nur um ~3 % gegenüber „Weiße LED" – moderne Grow-LEDs mit Weißlicht-Basis: „Weiße LED" wählen.',detect:false},
-  SODIUM_HPS:{r:0.52,g:0.41,factor:0.0122,u:0.05,name:'Natriumdampf',note:'HPS: charakteristisches Spektrum mit Lücken, Faktor vergleichsweise präzise.',detect:true},
+  SODIUM_HPS:{r:0.52,g:0.41,factor:0.0122,u:0.05,name:'Natriumdampf',note:'HPS: charakteristisches Spektrum mit Lücken. Faktor ist ein Richtwert, nicht gegen ein PAR-Meter geprüft.',detect:true},
   METAL_HALIDE:{factor:0.0145,u:0.06,name:'Metalldampf (MH)',note:'Breiteres Spektrum als HPS. Keine Auto-Erkennung – bitte manuell wählen.',detect:false},
   WHITE_FLUO:{r:0.30,g:0.38,factor:0.0140,u:0.08,name:'Leuchtstoff',note:'T5/T8-Röhren, phosphorabhängig.',detect:true}
 };
@@ -821,8 +827,10 @@ const ISO_SHIFT_NOTICE=0.005; // ab 0,5 % Unterschied wird die Altkalibrierung g
 // ({raw:rawPPFDUncalibrated, ref:referenzPPFD}) eine affine Korrektur
 // bestimmen: ppfd = slope*raw + offset. Ein Punkt => offset 0 (bisheriges
 // Verhalten, reine Steigung). Zwei Punkte bei DEUTLICH unterschiedlicher
-// Helligkeit kompensieren erste Ordnung Sensor-/ISP-Nichtlinearitaet ueber
-// den Dynamikbereich. Hinweis: Ein abgedeckter Punkt ist als zweite Stuetze
+// Helligkeit legen Steigung UND Offset fest. Das ist eine Gerade: sie trifft
+// beide Punkte, eine gekruemmte Kennlinie (Tonkurve, HDR, Saettigung) gleicht
+// sie nur naeherungsweise zwischen ihnen aus - eine allgemeine
+// Nichtlinearitaets-Korrektur ist es nicht. Hinweis: Ein abgedeckter Punkt ist als zweite Stuetze
 // nahezu wertlos - blackLevelLin wird bereits pixel-domain subtrahiert,
 // rawPPFD waere per Konstruktion ~0.
 // Guards: Mindestabstand der Rohwerte (CALIB2_MIN_SEP), Steigung > 0;
@@ -873,9 +881,13 @@ function computeCalib2(p1,p2){
 //   - Die Null-Zone: bei negativem Offset klemmt der Aufrufer alles unterhalb
 //     |offset|/slope auf 0. Dort ist die Anzeige nicht nur ungestuetzt,
 //     sondern gar keine Messung mehr. Das ist Punkt 1 der bekannten Grenzen.
-// Die Unsicherheit wird bewusst NICHT aufgeblaeht: Extrapolation ist eine
-// echte Unsicherheitsquelle, aber ihre Groesse ist ohne Vergleichsmessungen
-// nicht bezifferbar. Sichtbar machen statt schaetzen.
+// Fuer die EXTRAPOLATION (below/above) wird die Unsicherheit bewusst nicht
+// aufgeblaeht: sie ist eine echte Unsicherheitsquelle, aber ihre Groesse ist
+// ohne Vergleichsmessungen nicht bezifferbar. Sichtbar machen statt schaetzen.
+// Etwas anderes ist der negative Offset selbst (seit v3.4.22-25): dessen
+// Wirkung auf die RELATIVE Unsicherheit ist reine Rechnung, sie wird deshalb
+// fortgepflanzt und nahe der Nullstelle als "nicht quantifizierbar" ausgewiesen
+// (s. propagateAffineUncertainty).
 // Toleranz: unterhalb der halben bzw. oberhalb der doppelten Stuetzstelle.
 // Der Faktor 2 ist bewusst grosszuegig - eine Warnung, die staendig steht,
 // liest niemand mehr.
