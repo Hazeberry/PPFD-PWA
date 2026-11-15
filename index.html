@@ -256,7 +256,7 @@
       <div style="font-family:var(--mono);font-size:14px;color:var(--blue)" id="activeCalibVal">–</div>
       <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:10px 0 4px">Kalibrierpunkte</div>
       <div id="calibPointsList" style="font-family:var(--mono);font-size:12px;color:var(--text)">–</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.4">Ein neuer Punkt ersetzt Punkt 2. Einen veralteten Punkt einzeln löschen – „Reset“ löscht alle Profile dieser Kamera.</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.4">Ein neuer Punkt wird Punkt 2 und ersetzt einen vorhandenen Punkt 2. Einen veralteten Punkt einzeln löschen – „Reset“ löscht alle Profile dieser Kamera.</div>
     </div>
     <div class="modal-actions">
       <button class="modal-btn secondary" onclick="resetCalibration()">Reset</button>
@@ -1907,7 +1907,11 @@ function renderCalibPoints(){
   if(!el) return;
   el.textContent='';
   if(customCalibFactor===null){el.textContent='– keine';return;}
-  if(calibLegacyScope||!calibP1){el.textContent='Ältere Kalibrierung ohne einzeln gespeicherte Punkte – nur „Reset“.';return;}
+  if(!calibP1){el.textContent='Älterer Kalibrierfaktor ohne gespeicherte Punkte – nur „Reset“.';return;}
+  if(calibLegacyScope){
+    el.textContent='Ältere, profilunabhängige Kalibrierung: '+[calibP1,calibP2].filter(Boolean).map((p,i)=>'P'+(i+1)+' roh '+fmtCal(p.raw)+' → '+fmtCal(p.ref)).join(', ')+' – nur „Reset“.';
+    return;
+  }
   [calibP1,calibP2].forEach((p,i)=>{
     if(!p) return;
     const row=document.createElement('div');
@@ -1923,7 +1927,7 @@ function renderCalibPoints(){
 }
 function deleteCalibPoint(n){
   const d=loadCalib2Data();
-  if(calibLegacyScope||!d||!d.p1){showError('Diese Kalibrierung hat keine einzeln gespeicherten Punkte – nur „Reset“ möglich.');return;}
+  if(calibLegacyScope||!d||!d.p1){showError('Ältere Kalibrierung (profilunabhängig oder ohne Punkte) – Punkte nur über „Reset“ löschbar.');return;}
   const pts=[d.p1,d.p2].filter(Boolean);
   if(!(n>=1&&n<=pts.length)) return;
   const p=pts[n-1];
@@ -2846,7 +2850,9 @@ function processLoop(timestamp){
     // Fall aus HANDOFF.md Punkt 6: ob die Kamera die ISO dann nachregelt, laesst
     // sich an diesen Datenpunkten pruefen (Rohwert gegen Referenz bei
     // verschiedenen Helligkeiten).
-    isoGesteuert:hardwareSettings?(hardwareSettings.isoControlled?1:0):null,
+    // Nur im Manuell-Modus 1: Nach einem Rueckfall auf Auto-Belichtung regelt die
+    // Kamera die ISO wieder selbst, auch wenn die App sie vorher gesetzt hatte.
+    isoGesteuert:hardwareSettings?((hardwareSettings.constraintsApplied&&hardwareSettings.isoControlled)?1:0):null,
     rawPPFDUncalibrated:currentRawPPFDUncalibrated,
     lichtquelle:currentLightSourceName,
     clipLevel:clipStatus.level,

@@ -512,7 +512,27 @@ await t('Alte Kalibrierung ohne Punkte: Loeschen verweist auf Reset, nichts wird
   await app.start();await app.frames(EINSCHWINGEN+20);
   app.ev('deleteCalibPoint(1)');
   assert.strictEqual(app.store['ppfd_calibFactor_v2_user'],'2.0');
-  assert.ok(app.toasts.some(x=>/nur „Reset“/.test(x)));
+  assert.ok(app.toasts.some(x=>/nur über „Reset“/.test(x)));
+  app.ev('updateCalibDisplay()');
+  assert.ok(/ohne gespeicherte Punkte/.test(app.txt('calibPointsList')),app.txt('calibPointsList'));
+});
+
+await t('Profilunabhaengige Altkalibrierung MIT Punkten: Liste zeigt die Punkte, Loeschen nur ueber Reset', async()=>{
+  const app=makeApp({cam:MANUELL(),store:{'ppfd_calib2_v1_user':JSON.stringify({p1:{raw:50,ref:100},p2:null})}});
+  await app.start();await app.frames(EINSCHWINGEN+20);
+  app.ev('updateCalibDisplay()');
+  assert.ok(/profilunabhängige Kalibrierung: P1 roh 50 → 100/.test(app.txt('calibPointsList')),app.txt('calibPointsList'));
+  app.ev('deleteCalibPoint(1)');
+  assert.ok(app.store['ppfd_calib2_v1_user'],'Altkalibrierung veraendert');
+});
+
+await t('isoGesteuert ist nach einem Rueckfall auf Auto-Belichtung 0', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  await app.start();await app.frames(EINSCHWINGEN+20);
+  assert.strictEqual(app.ev('lastFrameSnapshot.isoGesteuert'),1);
+  await app.ev("revertToAutoExposure('test')");
+  await app.frames(EINSCHWINGEN+20);
+  assert.strictEqual(app.ev('lastFrameSnapshot.isoGesteuert'),0);
 });
 
 await t('ISO gesteuert: Kamera mit ISO-Steuerung 1, ohne 0 - im Datenpunkt', async()=>{

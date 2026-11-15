@@ -6,7 +6,7 @@ Die Fake-Kamera stammt aus Chromium. Sie läuft ausschließlich im Testbrowser u
 
 ## 1. Node-Tests
 
-Alle Harnesses laufen ohne Browser. `test_properties.js` und `test_model.js` brauchen `fast-check` (`npm install`), die übrigen sechs keine Abhängigkeit (`npm run test:nodeps`). Im Stand von v3.4.28: 8 Suites, 367 Tests.
+Alle Harnesses laufen ohne Browser. `test_properties.js` und `test_model.js` brauchen `fast-check` (`npm install`), die übrigen sechs keine Abhängigkeit (`npm run test:nodeps`). Im Stand von v3.4.28: 8 Suites, 369 Tests.
 
 ## 2. Browserlauf in Chromium
 
