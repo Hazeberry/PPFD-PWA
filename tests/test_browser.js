@@ -5,6 +5,8 @@ const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { chromium } = require('playwright');
+const { repeatCount, runBatch, saveFailure } = require('./helpers/browser_support');
+const output = path.resolve(__dirname, '../test-results/browser');
 
 const root = path.resolve(__dirname, '..');
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png' };
@@ -20,14 +22,19 @@ const server = http.createServer(async (req, res) => {
   } catch { res.writeHead(404).end(); }
 });
 
-async function scenario(browser, url, placeholder) {
+async function scenario(browser, url, placeholder, directory) {
   const name = placeholder ? 'missing exposure metadata' : 'Chromium fake camera';
   const context = await browser.newContext({ viewport: { width: 412, height: 915 }, permissions: ['camera'] });
   const errors = [];
+  const messages = [];
+  await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
   const page = await context.newPage();
   page.setDefaultTimeout(45000);
-  page.on('pageerror', error => errors.push(error.message));
-  page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+  page.on('pageerror', error => { errors.push(error.message); messages.push({ type: 'pageerror', text: error.message }); });
+  page.on('console', msg => {
+    messages.push({ type: msg.type(), text: msg.text() });
+    if (msg.type() === 'error') errors.push(msg.text());
+  });
   try {
     if (placeholder) await context.addInitScript(() => {
       const strip = value => {
@@ -77,26 +84,42 @@ async function scenario(browser, url, placeholder) {
       return !!registration?.active && (await caches.keys()).includes(`ppfd-v${version}`);
     });
     assert.deepEqual(errors, [], `${name}: browser errors`);
+    await context.tracing.stop(); // Successful traces are discarded.
     console.log(`PASS: ${name} (display, mode, service worker${placeholder ? ', calibration blocked' : ', initial values'})`);
   } catch (error) {
-    console.error(name, await page.locator('body').innerText().catch(() => 'Page unavailable'));
+    await saveFailure({ directory, page, context, error, messages }).catch(failure => console.error('Could not save diagnostics:', failure));
     throw error;
   } finally { await context.close(); }
 }
 
 (async () => {
-  let browser;
+  const repeats = repeatCount(process.env.BROWSER_TEST_REPEATS);
+  // Only remove this harness's generated output, never repository files.
+  await fs.rm(output, { recursive: true, force: true });
+  await fs.mkdir(output, { recursive: true });
   try {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-    browser = await chromium.launch({
-      ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),
-      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
-    });
     const url = `http://127.0.0.1:${server.address().port}`;
-    await scenario(browser, url, false);
-    await scenario(browser, url, true);
+    const tasks = Array.from({ length: repeats }, (_, i) => [
+      { name: `run-${i + 1}-camera`, placeholder: false },
+      { name: `run-${i + 1}-placeholder`, placeholder: true },
+    ]).flat();
+    const results = await runBatch(tasks, async task => {
+      // Each scenario gets a fresh process and context, even after a failure.
+      const browser = await chromium.launch({
+        ...(process.env.CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.CHROMIUM_EXECUTABLE_PATH } : {}),
+        args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+      });
+      try { await scenario(browser, url, task.placeholder, path.join(output, task.name)); }
+      finally { await browser.close(); }
+    });
+    const failed = results.filter(result => result.status === 'failed').length;
+    await fs.writeFile(path.join(output, 'summary.json'), JSON.stringify({ repeats, passed: results.length - failed, failed, results }, null, 2) + '\n');
+    const summary = `Browser tests: ${results.length - failed}/${results.length} passed; ${failed} failed (${repeats} runs per scenario).`;
+    console.log(summary);
+    if (process.env.GITHUB_STEP_SUMMARY) await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+    if (failed) process.exitCode = 1;
   } finally {
-    if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });
