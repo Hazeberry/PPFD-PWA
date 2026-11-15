@@ -1,8 +1,8 @@
 # CI: Tests und Browserlauf automatisch ausführen
 
-**Stand:** Das Repo hat keine CI. Es gibt keinen Ordner `.github/workflows`, und PRs bekommen keine Check-Runs. `npm test` läuft nur lokal, wenn jemand daran denkt. Der Browserlauf in Chromium (siehe unten) lief bisher ebenfalls nur lokal, in einer Cloud-Sitzung, und das Skript dafür liegt nicht im Repo.
+**Stand:** `.github/workflows/test.yml` führt die Node-Tests und den Chromium-Browser-Test bei Pull Requests und Pushes auf `main` aus. Manuelles Starten ist über `workflow_dispatch` möglich, sobald der Workflow auf dem Standardbranch liegt.
 
-Diese Datei beschreibt, wie beides auf GitHub Actions laufen soll. **Nichts davon ist auf einem GitHub-Runner ausprobiert.** Die YAML-Datei unten ist ein Entwurf; getestet ist nur der Browserlauf mit denselben Flags lokal.
+Die Fake-Kamera stammt aus Chromium. Sie läuft ausschließlich im Testbrowser und benötigt weder eine echte Kamera noch einen Anthropic-Zugang.
 
 ## 1. Node-Tests
 
@@ -16,7 +16,7 @@ Alle Harnesses laufen ohne Browser. `test_properties.js` und `test_model.js` bra
 npx playwright install --with-deps chromium
 ```
 
-`--with-deps` installiert zusätzlich die Systembibliotheken, die Chromium auf einem frischen Ubuntu-Runner braucht. Ohne diese Option startet der Browser dort oft nicht. Playwright als Entwicklungsabhängigkeit aufnehmen und die Version festlegen (lokal geprüft mit 1.63.0), damit die Chromium-Version nicht unbemerkt wandert.
+`--with-deps` installiert zusätzlich die Systembibliotheken, die Chromium auf einem frischen Ubuntu-Runner braucht. Ohne diese Option startet der Browser dort oft nicht. Playwright ist als Entwicklungsabhängigkeit auf 1.63.0 festgelegt; die Lock-Datei wird mitgeführt.
 
 ### Chromium-Flags für die Test-Kamera
 
@@ -74,7 +74,7 @@ await context.addInitScript(() => {
 
 Erwartet: Hardware-Modus „Software (no-manual-control)“, Abzeichen „Nur Platzhalter – keine Messung“, in der Unsicherheitszeile „Keine Messung: …“, Kalibrieren abgelehnt (Meldung im Toast, kein Eintrag `ppfd_calib…` in `localStorage`).
 
-### Was geprüft werden soll
+### Was `tests/test_browser.js` prüft
 
 Jeweils nach dem Einschwingen:
 
@@ -90,54 +90,21 @@ Nützliche Elemente: `#ppfdVal`, `#zoneBadge`, `#uncertaintyVal`, `#calibRangeVa
 
 Die Test-Kamera liefert ein Testbild (bewegte Muster), keine definierte Lichtstärke. Geprüft werden kann damit der **Ablauf** (Start, Modus, Anzeige, Sperren, Service Worker), nicht die Genauigkeit eines Messwerts. Das Verhalten echter Handykameras (Punkt 1 in `HANDOFF.md`) ersetzt es nicht.
 
-## 3. Entwurf der Workflow-Datei
+## 3. Ausführen
 
-Als `.github/workflows/test.yml` anlegen. Ungetestet.
-
-```yaml
-name: Tests
-on:
-  pull_request:
-  push:
-    branches: [main]
-
-jobs:
-  node:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
-
-  browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: node tests/test_browser.js
+```bash
+npm ci
+npm test
+npx playwright install --with-deps chromium
+npm run test:browser
 ```
 
-Zu klären, wenn es umgesetzt wird:
+Die verbindliche Workflow-Datei ist `.github/workflows/test.yml`. Beide Jobs verwenden Node.js 22, `actions/checkout@v7` und `actions/setup-node@v7`, npm-Caching und ein Zeitlimit von zehn Minuten. Neue Läufe brechen ältere Läufe desselben PRs ab.
 
-- Aktions-Versionen (`actions/checkout`, `actions/setup-node`) auf die dann aktuelle Hauptversion festlegen und prüfen.
-- `tests/test_browser.js` gibt es noch nicht (`HANDOFF.md`, Punkt 12). Er muss mit Exit-Code ≠ 0 enden, wenn eine Prüfung fehlschlägt.
-- Playwright als `devDependency` in `package.json` aufnehmen, dann braucht `npm ci` die Lock-Datei auf dem neuesten Stand.
-- `npm ci` lädt nur Abhängigkeiten; das Chromium selbst kommt erst durch `playwright install`.
-- Soll der Browser-Job den PR blockieren, in den Branch-Schutzregeln als erforderlicher Check eintragen. Sonst bleibt er eine Auskunft.
-- Bei Fehlern den Browserlauf mit `--trace on` wiederholen; nur dann lohnt sich der Aufwand der Trace-Dateien.
+Der Browser-Test startet einen lokalen HTTP-Server und zwei getrennte Browser-Kontexte. Bei einem Fehler endet er mit einem Fehlercode und schreibt den Seiteninhalt ins Job-Log. Browser und Server werden anschließend geschlossen. Die ersten zehn numerischen Anzeigewerte werden erfasst; der erste muss innerhalb von 20 % ihres Medians liegen. Das prüft den Anzeigeanlauf, nicht die Messgenauigkeit.
 
-## 4. Reihenfolge
+## 4. Prüfnachweis und Grenzen
 
-1. `tests/test_browser.js` schreiben und lokal grün bekommen.
-2. Workflow mit nur dem `node`-Job anlegen und im PR prüfen.
-3. `browser`-Job ergänzen.
-4. Erst danach Checks als erforderlich markieren.
+Die Node-Tests wurden bei der Einrichtung lokal erfolgreich ausgeführt (Node.js 24). Der lokale Browserlauf war durch die Ausführungsumgebung blockiert: Der Playwright-Browserdownload lieferte kein gültiges Archiv; der vorhandene Systembrowser durfte seinen Prozess-Socket nicht öffnen. Der maßgebliche Nachweis für Node.js 22 und den gepinnten Chromium-Browser ist deshalb der GitHub-Actions-Lauf im PR.
+
+Die Checks sind nicht automatisch als verpflichtender Branch-Schutz eingerichtet. Ein erfolgreicher Browser-Test ersetzt keine Prüfung mit einer echten Handykamera.
