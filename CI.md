@@ -130,3 +130,5 @@ Unter dem GitHub-Lauf steht das Artefakt `browser-results-<run-id>-<attempt>` si
 Traces werden während des Tests aufgezeichnet, bei Erfolg verworfen. Einen heruntergeladenen Trace öffnet `npx playwright show-trace pfad/trace.zip`. Lokal liegen die Dateien unter `test-results/browser/`; der nächste Lauf ersetzt dieses Verzeichnis.
 
 Die ±20-%-Prüfung des Anzeigeanlaufs bleibt unverändert. Wiederholungen prüfen ihre Zuverlässigkeit mit dem bewegten Testbild; sie belegen keine physikalische Messgenauigkeit. Branch-Schutz bleibt unverändert.
+
+Validierung dieser Erweiterung: [GitHub-Lauf 43693076500](https://github.com/Hazeberry/PPFD-PWA/actions/runs/43693076500) hat zehn Durchläufe je Kamera-Szenario bestanden (20/20). Ein vorher absichtlich ausgelöster Fehler bestätigte Exit-Code 1, die Fortsetzung des zweiten Szenarios sowie Screenshot- und Trace-Erzeugung. Das ist ein erster Stabilitätsnachweis, keine Garantie gegen spätere Ausreißer.

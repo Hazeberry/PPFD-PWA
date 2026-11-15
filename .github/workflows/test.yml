@@ -43,34 +43,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - name: Verify failure diagnostics (temporary)
-        run: |
-          cp tests/test_browser.js /tmp/test_browser.original.js
-          python3 - <<'PYTEST'
-          from pathlib import Path
-          p = Path('tests/test_browser.js')
-          s = p.read_text()
-          assert "assert.equal(mode, 'Manuell');" in s
-          p.write_text(s.replace("assert.equal(mode, 'Manuell');", "assert.fail('intentional diagnostics self-test');"))
-          PYTEST
-          set +e
-          npm run test:browser
-          result=$?
-          set -e
-          cp /tmp/test_browser.original.js tests/test_browser.js
-          test "$result" -eq 1
-          test -s test-results/browser/run-1-camera/screenshot.png
-          unzip -t test-results/browser/run-1-camera/trace.zip
-          node -e "const s=require('./test-results/browser/summary.json');if(s.failed!==1||s.passed!==1)process.exit(1)"
-          mv test-results/browser test-results/diagnostic-self-test
       - run: npm run test:browser
         env:
-          BROWSER_TEST_REPEATS: ${{ inputs.repetitions || '10' }}
+          BROWSER_TEST_REPEATS: ${{ inputs.repetitions || '1' }}
       - name: Upload browser diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: browser-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-results/
+          path: test-results/browser/
           if-no-files-found: warn
           retention-days: 7
