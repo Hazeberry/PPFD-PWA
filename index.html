@@ -2805,7 +2805,8 @@ function processLoop(timestamp){
   if(settleStatus.isWarmedUp&&!isClipping){
     const dli12=(displayPPFD*12*3600/1e6).toFixed(1);
     const dli18=(displayPPFD*18*3600/1e6).toFixed(1);
-    document.getElementById('dliVal').textContent=hasValue?`DLI 12h: ${dli12} · 18h: ${dli18} mol·m⁻²·d⁻¹`:'DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
+    // Aus einem Platzhalter (s. exposureStatus) wird auch kein DLI hochgerechnet.
+    document.getElementById('dliVal').textContent=(hasValue&&!expStat.placeholder)?`DLI 12h: ${dli12} · 18h: ${dli18} mol·m⁻²·d⁻¹`:'DLI 12h: – · 18h: – mol·m⁻²·d⁻¹';
     // v3.4.3 FIX: ERWEITERTE Unsicherheit (k=2, ~95%) anzeigen, nicht die
     // kombinierte Standardunsicherheit (k=1, ~68%). uRel ist per GUM eine
     // Standardunsicherheit; "±7 %" ohne Angabe des Erweiterungsfaktors liest
@@ -2872,13 +2873,15 @@ function processLoop(timestamp){
     qGateOpen:qGateOpen,gateWeakest:lastQuality?.gateWeakest});
   // v3.4.27: Ein Platzhalter-Wert (s. exposureStatus) wird genauso kenntlich
   // gemacht wie ein gehaltener - sonst sieht er aus wie ein Messwert.
-  const placeholderShown=!held&&expStat.placeholder&&settleStatus.isWarmedUp&&!isClipping;
+  // Der Platzhalter geht dem Halt vor: "gehalten" setzt voraus, dass es einen
+  // Messwert gibt, der gehalten wird - beim Platzhalter gibt es keinen.
+  const placeholderShown=expStat.placeholder&&settleStatus.isWarmedUp&&!isClipping;
   ppfdEl.style.opacity=(held||placeholderShown)?'0.4':'';
-  if(held){
-    badgeEl.textContent=held.kind==='step'?'Belichtung stellt um':'Gehalten: '+(Q_WEAKEST_LABELS[held.weakest]||'Messgüte');
-    badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
-  }else if(placeholderShown){
+  if(placeholderShown){
     badgeEl.textContent='Nur Platzhalter – keine Messung';
+    badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
+  }else if(held){
+    badgeEl.textContent=held.kind==='step'?'Belichtung stellt um':'Gehalten: '+(Q_WEAKEST_LABELS[held.weakest]||'Messgüte');
     badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
   }
 

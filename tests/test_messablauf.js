@@ -157,6 +157,7 @@ await t('REGRESSION: keine Prozentzahl, abgedunkelt, Kalibrieren und Trainingspu
   assert.ok(!/±/.test(app.txt('uncertaintyVal')),'trotzdem eine Prozentzahl: '+app.txt('uncertaintyVal'));
   assert.strictEqual(app.el('ppfdVal').style.opacity,'0.4','Zahl sieht aus wie ein Messwert');
   assert.ok(/Platzhalter/.test(app.txt('zoneBadge')),'Abzeichen: '+app.txt('zoneBadge'));
+  assert.ok(/12h: – · 18h: –/.test(app.txt('dliVal')),'DLI aus einem Platzhalter hochgerechnet: '+app.txt('dliVal'));
   const m1=app.kalibrieren(500);
   assert.deepStrictEqual(app.kalibKeys(),[],'Kalibrierung auf einen Platzhalter gespeichert');
   assert.ok(/Platzhalter/.test(m1.join(' ')),'keine verstaendliche Meldung: '+m1);
@@ -165,6 +166,9 @@ await t('REGRESSION: keine Prozentzahl, abgedunkelt, Kalibrieren und Trainingspu
   assert.strictEqual(app.ev('lastFrameSnapshot.uRel'),null);
   assert.strictEqual(app.ev('lastFrameSnapshot.belichtungGemeldet'),0);
   assert.strictEqual(app.ev('lastFrameSnapshot.isoGemeldet'),0);
+  // Kommt ein Halt dazu, bleibt der Platzhalter die Auskunft (es gibt keinen Messwert, der gehalten wuerde).
+  app.setFrame((x)=>x<W/2?[40,40,40]:[230,230,230]);await app.frames(10);
+  assert.ok(/Platzhalter/.test(app.txt('zoneBadge')),'Halt ueberdeckt den Platzhalter: '+app.txt('zoneBadge'));
 });
 
 await t('Meldet die Kamera Belichtung und ISO, ist es eine Messung (Software-Modus bleibt nutzbar)', async()=>{
