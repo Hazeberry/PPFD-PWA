@@ -64,7 +64,7 @@ async function scenario(browser, url, placeholder) {
     } else {
       assert.equal(mode, 'Manuell');
       assert.match(await page.locator('#debugExpVal').textContent(), /min=10 max=100/);
-      assert.match(await page.locator('#calibRangeVal').textContent(), /ISO nicht gemeldet/);
+      assert.match(await page.locator('#uncertaintyVal').textContent(), /ISO nicht gemeldet/);
       assert.doesNotMatch(await page.locator('#zoneBadge').textContent(), /Platzhalter/);
       const values = await page.evaluate(() => window.testValues.slice(0, 10));
       const median = [...values].sort((a, b) => a - b)[5];
