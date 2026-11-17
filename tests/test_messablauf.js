@@ -643,6 +643,70 @@ await t('Export ohne Daten: Meldung statt leerer Datei', async()=>{
   assert.ok(app.toasts.some(x=>/Noch keine Diagnose-Daten/.test(x)));
 });
 
+console.log('== v3.4.29: Rec - Momentaufnahmen fuers Protokoll ==');
+const aufnahmen=app=>app.ev('diagLog').filter(e=>e.typ==='aufnahme');
+
+await t('Rec: 3 Aufnahmen im Abstand von 30 s, erste sofort, danach Ende mit Meldung', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');
+  assert.strictEqual(aufnahmen(app).length,1,'erste Aufnahme nicht sofort');
+  assert.ok(/⏹ Rec 1\/3 · nächste in 30 s/.test(app.txt('recBtn')),app.txt('recBtn'));
+  await app.frames(450);                                          // 15 s
+  assert.ok(/1\/3 · nächste in 1[45] s/.test(app.txt('recBtn')),'Zaehler laeuft nicht: '+app.txt('recBtn'));
+  assert.strictEqual(aufnahmen(app).length,1,'zu frueh aufgenommen');
+  await app.frames(450);await app.advance(0);                     // 30 s
+  assert.strictEqual(aufnahmen(app).length,2);
+  await app.frames(910);await app.advance(0);                     // 60 s (+ Rundungsreserve der Test-Uhr)
+  const a=aufnahmen(app);
+  assert.strictEqual(a.length,3);
+  assert.deepStrictEqual(a.map(x=>x.nr),[1,2,3]);
+  assert.ok(a[2].t-a[0].t>=59000&&a[2].t-a[0].t<=61000,'Abstand: '+(a[2].t-a[0].t));
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  assert.ok(app.toasts.some(x=>/Aufnahme fertig \(3\/3\)/.test(x)));
+  assert.ok(/letzte Serie: 3\/3/.test(app.txt('recBtn')),app.txt('recBtn'));
+  await app.frames(900);await app.advance(0);
+  assert.strictEqual(aufnahmen(app).length,3,'nach 3 nicht aufgehoert');
+});
+
+await t('Rec-Aufnahme enthaelt, was auf dem Bildschirm steht, plus App- und Kamerawerte', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');
+  const a=aufnahmen(app)[0];
+  assert.strictEqual(a.anzeige.ppfd,app.txt('ppfdVal'));
+  assert.strictEqual(a.anzeige.hardwareModus,'Manuell');
+  assert.strictEqual(a.anzeige.unsicherheit,app.txt('uncertaintyVal'));
+  assert.ok(a.anzeige.debug.startsWith('min='),'Debug-Zeile fehlt');
+  assert.strictEqual(a.gemeldet.exposureTime,40);
+  assert.ok(a.bild.yGamma>100&&a.bild.roh>0);
+  assert.strictEqual(a.serie,1);assert.strictEqual(a.von,3);
+  assert.ok('kamerabild' in a,'Feld kamerabild fehlt'); // Bild selbst: im Browser geprueft (Attrappe hat keine Canvas)
+  const j=JSON.parse(app.ev('diagExportText()'));
+  assert.strictEqual(j.eintraege.filter(e=>e.typ==='aufnahme').length,1,'Aufnahme fehlt im Export');
+});
+
+await t('Rec bricht ab, wenn die Messung stoppt; erneutes Tippen bricht ebenfalls ab', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');await app.frames(300);
+  app.ev('stopCamera()');
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  await app.advance(60000);
+  assert.strictEqual(aufnahmen(app).length,1,'nach dem Stopp weiter aufgenommen');
+  assert.ok(app.ev('diagLog').some(e=>e.typ==='rec'&&e.aktion==='ende'&&e.grund==='Messung gestoppt'));
+  await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');app.ev('recToggle()');
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  assert.ok(app.ev('diagLog').some(e=>e.typ==='rec'&&e.grund==='abgebrochen'));
+  assert.strictEqual(aufnahmen(app).filter(x=>x.serie===2).length,1);
+});
+
+await t('Rec ohne laufende Messung: Hinweis, keine Aufnahme', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  app.ev('recToggle()');
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  assert.ok(app.toasts.some(x=>/Erst die Kamera starten/.test(x)));
+  assert.strictEqual(aufnahmen(app).length,0);
+});
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
 })();

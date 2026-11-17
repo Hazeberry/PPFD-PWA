@@ -176,8 +176,9 @@
   <button class="calib-btn" style="border-color:var(--muted);color:var(--muted)" id="measureBlackLevelBtn" onclick="measureBlackLevel()">⚫ Schwarzwert messen (Linse abdecken)</button>
   <div class="src-note" id="blackLevelNote" style="text-align:center"></div>
   <button class="calib-btn" style="border-color:var(--red);color:var(--red);margin-top:4px;display:none" id="resetBlackLevelBtn" onclick="resetBlackLevel()">Schwarzwert-Referenz löschen</button>
+  <button class="calib-btn" style="border-color:var(--muted);color:var(--muted)" id="recBtn" onclick="recToggle()">⏺ Rec – 3 Aufnahmen, alle 30 s</button>
   <button class="calib-btn" style="border-color:var(--muted);color:var(--muted)" id="diagExportBtn" onclick="exportDiagnostics()">🩺 Diagnose exportieren</button>
-  <div class="src-note" style="text-align:center">Zeichnet auf, was die Kamera meldet und was die App misst (nur auf dem Gerät, keine Bilder) – zum Teilen, wenn Werte unplausibel wirken.</div>
+  <div class="src-note" style="text-align:center">Zeichnet auf, was die Kamera meldet und was die App misst (nur auf dem Gerät) – zum Teilen, wenn Werte unplausibel wirken. „Rec“ ergänzt das Protokoll um Momentaufnahmen aller angezeigten Werte mit einem kleinen Kamerabild.</div>
 
   <div class="params-card" id="trainCard">
     <div class="section-label">Trainingsdaten (Referenzmessung)</div>
@@ -230,7 +231,7 @@
     Anzeige startet beim Messwert statt bei 0 · Platzhalter-Wert (Auto-Belichtung ohne Meldung) abgedunkelt, nicht kalibrierbar · Kalibrierung auf den Median der letzten Sekunde, nur bei neutralem Software-Gain<br>
     Altkalibrierung nur noch bei betroffener ISO gemeldet · Null-Zone auch bei schwarzem Frame · Export nennt Rohwert-Basis und ob Belichtung/ISO gemeldet waren<br>
     Kalibrierpunkte einzeln löschbar · Schwarzwert gehört zur Kalibrierung (Hinweis bei Änderung) · Trainingspunkte als Median · Export: ISO gesteuert · Einheit „µmol“ nicht mehr als „ΜMOL“<br>
-    Diagnose-Protokoll: Kamera-Befehle, gemeldete Einstellungen, Bildhelligkeit und echte Kamera-Bildrate zum Exportieren<br>
+    Diagnose-Protokoll: Kamera-Befehle, gemeldete Einstellungen, Bildhelligkeit und echte Kamera-Bildrate zum Exportieren · Rec: 3 Momentaufnahmen mit Kamerabild<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -1551,6 +1552,80 @@ function diagExportText(){
     kamera:cameraFacing,eintraege:diagLog.length,verworfen:diagDropped,hinweis:'t = Millisekunden seit Protokollstart'};
   return '{\n"meta":'+JSON.stringify(meta)+',\n"eintraege":[\n'+diagLog.map(e=>JSON.stringify(e)).join(',\n')+'\n]}\n';
 }
+// ===== v3.4.29: Rec - Momentaufnahmen als Ergaenzung zum Protokoll =====
+// Eine Web-App kann auf Android keinen Screenshot von sich selbst machen. Rec
+// haelt stattdessen fest, was auf dem Bildschirm steht (alle angezeigten Werte),
+// dazu ein kleines Bild dessen, was die Kamera gerade sieht - das zeigt kein
+// Screenshot, und genau das ist im Feldfall A20s die offene Frage (war das Bild
+// wirklich dunkel?). 3 Aufnahmen im Abstand von 30 s, die erste sofort: eine
+// Minute, repraesentativ und klein. Die Aufnahmen landen im Diagnose-Protokoll
+// (Typ 'aufnahme') und werden mit "Diagnose exportieren" ausgegeben.
+// Aendert keinen Messwert. Kamerabild 160x120 JPEG (~5-10 kB je Aufnahme).
+const REC_SHOTS=3,REC_INTERVAL_MS=30000,REC_IMG_W=160,REC_IMG_H=120;
+const rec={aktiv:false,serie:0,n:0,timer:null,naechste:0};
+function recImage(){
+  try{
+    const c=document.createElement('canvas');c.width=REC_IMG_W;c.height=REC_IMG_H;
+    const x=c.getContext('2d');x.drawImage(video,0,0,REC_IMG_W,REC_IMG_H);
+    const url=c.toDataURL('image/jpeg',0.7);
+    return typeof url==='string'&&url.startsWith('data:image/')?url:null;
+  }catch(e){return null;}
+}
+function recSnapshot(){
+  const txt=id=>{try{return (document.getElementById(id).textContent||'').trim();}catch(e){return null;}};
+  let tr=null;try{tr=activeStream?.getVideoTracks()[0]||null;}catch(e){}
+  const f=lastFrameSnapshot||{};
+  return{
+    anzeige:{ppfd:txt('ppfdVal'),abgedunkelt:(()=>{try{return document.getElementById('ppfdVal').style.opacity==='0.4';}catch(e){return null;}})(),
+      abzeichen:txt('zoneBadge'),unsicherheit:txt('uncertaintyVal'),bereich:txt('calibRangeVal'),dli:txt('dliVal'),
+      hardwareModus:txt('hardwareVal'),debug:txt('debugExpVal'),lichtquelle:txt('lightSourceVal'),flicker:txt('flickerVal'),
+      clipping:txt('clippingVal'),signal:txt('signalVal'),homogenitaet:txt('uniformityVal'),messqualitaet:txt('reliabilityVal'),
+      fpsAnzeige:txt('fpsVal'),pixelStep:txt('stepVal')},
+    app:{belichtung_s:hardwareSettings?.exposureTime??null,iso:hardwareSettings?.iso??null,
+      belichtungGemeldet:hardwareSettings?.exposureReported??null,isoGemeldet:hardwareSettings?.isoReported??null},
+    gemeldet:tr?diagSettings(tr):null,
+    bild:{yGamma:Number.isFinite(f.yMean_gamma)?Math.round(f.yMean_gamma*10)/10:null,
+      yLinear:Number.isFinite(f.yMean_lin)?Math.round(f.yMean_lin*10000)/10000:null,
+      roh:Number.isFinite(f.rawPPFDUncalibrated)?Math.round(f.rawPPFDUncalibrated*100)/100:null},
+    fpsKamera:diagCam.fps===null?null:Math.round(diagCam.fps*10)/10,
+    kamerabild:recImage()
+  };
+}
+function recButtonText(){
+  if(rec.aktiv){
+    const rest=Math.max(0,Math.ceil((rec.naechste-performance.now())/1000));
+    return '⏹ Rec '+rec.n+'/'+REC_SHOTS+(rec.n<REC_SHOTS?' · nächste in '+rest+' s':'')+' – tippen zum Abbrechen';
+  }
+  return rec.serie>0?'⏺ Rec – letzte Serie: '+rec.n+'/'+REC_SHOTS+' aufgenommen · neu starten':'⏺ Rec – 3 Aufnahmen, alle 30 s';
+}
+function recUpdateButton(){try{document.getElementById('recBtn').textContent=recButtonText();}catch(e){}}
+function recShot(){
+  rec.timer=null;
+  if(!rec.aktiv) return;
+  if(!isMeasuring){recStop('Messung gestoppt');return;}
+  rec.n++;
+  diag('aufnahme',Object.assign({serie:rec.serie,nr:rec.n,von:REC_SHOTS},recSnapshot()));
+  if(rec.n>=REC_SHOTS){recStop('fertig');return;}
+  rec.naechste=performance.now()+REC_INTERVAL_MS;
+  rec.timer=setTimeout(recShot,REC_INTERVAL_MS);
+  recUpdateButton();
+}
+function recStop(grund){
+  if(rec.timer){clearTimeout(rec.timer);rec.timer=null;}
+  if(!rec.aktiv) return;
+  rec.aktiv=false;
+  diag('rec',{aktion:'ende',serie:rec.serie,grund:grund,aufnahmen:rec.n});
+  recUpdateButton();
+  if(grund==='fertig') showError('Aufnahme fertig ('+rec.n+'/'+REC_SHOTS+') – mit „Diagnose exportieren“ sichern.');
+  else showError('Aufnahme beendet ('+grund+') – '+rec.n+'/'+REC_SHOTS+' Aufnahmen im Protokoll.');
+}
+function recToggle(){
+  if(rec.aktiv){recStop('abgebrochen');return;}
+  if(!isMeasuring){showError('Erst die Kamera starten – Rec nimmt während der Messung auf.');return;}
+  rec.serie++;rec.n=0;rec.aktiv=true;
+  diag('rec',{aktion:'start',serie:rec.serie,anzahl:REC_SHOTS,abstand_s:REC_INTERVAL_MS/1000});
+  recShot();
+}
 function exportDiagnostics(){
   if(diagLog.length===0){showError('Noch keine Diagnose-Daten – erst die Kamera starten.');return;}
   const blob=new Blob([diagExportText()],{type:'application/json;charset=utf-8'});
@@ -2445,6 +2520,7 @@ async function startCamera(){
 
 function stopCamera(){
   if(isMeasuring||activeStream) diag('stop',{}); // v3.4.29
+  if(rec.aktiv) recStop('Messung gestoppt'); // v3.4.29
   isMeasuring=false;
   releaseWakeLock();
   clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
@@ -2686,6 +2762,7 @@ function processLoop(timestamp){
   else if(smoothedFps>FPS_THRESHOLD_HIGH){lowFpsFrameCount=Math.max(lowFpsFrameCount-1,0);}
   flickerReliable=lowFpsFrameCount<FPS_CONFIRM_FRAMES;
 
+  if(rec.aktiv&&frameCount%10===0) recUpdateButton(); // v3.4.29: Rec-Zaehler
   if(frameCount%30===0){
     document.getElementById('fpsVal').textContent=smoothedFps.toFixed(1)+' fps';
     document.getElementById('stepVal').textContent=pixelStep+'×';
