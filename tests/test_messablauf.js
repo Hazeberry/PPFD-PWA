@@ -544,6 +544,169 @@ await t('ISO gesteuert: Kamera mit ISO-Steuerung 1, ohne 0 - im Datenpunkt', asy
   }
 });
 
+console.log('== v3.4.29: Diagnose-Protokoll (HANDOFF Punkt 16) ==');
+
+// Kamera wie fuer den Feldfall A20s vermutet: Belichtungsbefehle werden gemeldet,
+// wirken beim Start aber nicht aufs Bild; nach dem Rueckfall auf Auto belichtet sie
+// real kurz (Bild normal hell), MELDET aber weiter den letzten manuellen Wert.
+const A20S_VERDACHT=()=>({caps:{exposureMode:['continuous','manual'],exposureTime:{min:0.13196,max:2533.57195},iso:{min:50,max:3200}},
+  settings:{exposureTime:40,iso:100,exposureMode:'continuous'},
+  onApply:(c,cam,app)=>{for(const a of c.advanced||[]){
+    if(a.exposureTime!==undefined) cam.settings.exposureTime=a.exposureTime;
+    if(a.iso!==undefined) cam.settings.iso=a.iso;
+    if(a.exposureMode==='continuous'){cam.settings.exposureMode='continuous';app.setFrame([146,146,146]);}
+    if(a.exposureMode==='manual') cam.settings.exposureMode='manual';}}});
+const protokoll=app=>app.ev('diagLog');
+
+await t('Feldfall A20s nachgestellt: das Protokoll zeigt Rampe, Rueckfall und den Widerspruch "253 ms gemeldet, Bild hell"', async()=>{
+  const app=makeApp({cam:A20S_VERDACHT()});app.setFrame([18,18,18]);
+  await app.start();await app.frames(EINSCHWINGEN+60);
+  const p=protokoll(app);
+  const anf=p.filter(e=>e.typ==='stellbefehl').flatMap(e=>(e.anforderung.advanced||[]).map(a=>a.exposureTime)).filter(v=>v!==undefined);
+  assert.deepStrictEqual(anf.slice(0,4),[40,160,640,2533.57195],'Rampe nicht protokolliert: '+anf);
+  assert.ok(p.some(e=>e.typ==='helligkeit'&&e.y<25),'Bildhelligkeit waehrend der Rampe fehlt');
+  const erg=p.find(e=>e.typ==='ergebnis');
+  assert.strictEqual(erg.modus,'software');assert.strictEqual(erg.rueckfall,'exposure-out-of-range');
+  const z=p.filter(e=>e.typ==='zustand').pop();
+  assert.ok(z,'kein Zustandseintrag');
+  assert.strictEqual(z.gemeldet.exposureTime,2533.57195,'live gemeldete Belichtung fehlt');
+  assert.strictEqual(z.gemeldet.exposureMode,'continuous');
+  assert.ok(z.bild.yGamma>100,'Bildhelligkeit im Zustand fehlt oder falsch: '+z.bild.yGamma);
+  assert.ok(Math.abs(z.app.belichtung_s-0.253357195)<1e-9,'womit die App rechnet, fehlt');
+  assert.strictEqual(z.anzeige,app.txt('ppfdVal'));
+});
+
+await t('Protokoll aendert keinen Messwert (gleiche Anzeige wie ohne Huelle)', async()=>{
+  const a=makeApp({cam:MANUELL()});await a.start();await a.frames(EINSCHWINGEN+60);
+  const b=makeApp({cam:MANUELL()});b.ev('diagInstrumentTrack=function(){}');await b.start();await b.frames(EINSCHWINGEN+60);
+  assert.strictEqual(a.txt('ppfdVal'),b.txt('ppfdVal'));
+  assert.strictEqual(a.ev('currentRawPPFDUncalibrated'),b.ev('currentRawPPFDUncalibrated'));
+});
+
+await t('Stellfehler werden protokolliert und weitergereicht', async()=>{
+  const cam=MANUELL();
+  cam.onApply=async c=>{if((c.advanced||[]).some(a=>a.exposureMode==='manual')) throw Object.assign(new Error('nein'),{name:'OverconstrainedError'});};
+  const app=makeApp({cam});
+  const hs=await app.start();
+  assert.strictEqual(hs.fallbackMode,'software-lock','Fehler wurde verschluckt');
+  assert.ok(protokoll(app).some(e=>e.typ==='stellfehler'&&/OverconstrainedError: nein/.test(e.fehler)));
+});
+
+await t('Echte Kamerabilder: mit requestVideoFrameCallback je Sekunde Bildrate und uebersprungene Bilder', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  const q=[];app.el('videoFeed').requestVideoFrameCallback=cb=>{q.push(cb);return q.length;};
+  await app.start();await app.frames(10);
+  // 30 Kamerabilder je Sekunde, jedes dritte geht verloren (presentedFrames springt)
+  let pf=0;
+  for(let i=0;i<70;i++){pf+=(i%3===2)?2:1;const cbs=q.splice(0);cbs.forEach(cb=>cb(5000+i*33.34,{presentedFrames:pf,mediaTime:i/30}));}
+  const k=protokoll(app).filter(e=>e.typ==='kamerabilder'&&e.fps);
+  assert.ok(k.length>=2,'keine Kamerabild-Eintraege');
+  assert.ok(Math.abs(k[0].fps-30)<1.5,'Kamera-Bildrate '+k[0].fps);
+  assert.ok(k[0].uebersprungen>=9,'uebersprungene Bilder nicht gezaehlt: '+k[0].uebersprungen);
+  await app.frames(40);
+  const z=protokoll(app).filter(e=>e.typ==='zustand').pop();
+  assert.ok(Math.abs(z.fpsKamera-30)<1.5,'Zustand nennt die Kamera-Bildrate nicht');
+});
+
+await t('Ohne requestVideoFrameCallback: vermerkt, kein Fehler', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+40);
+  assert.ok(protokoll(app).some(e=>e.typ==='kamerabilder'&&e.verfuegbar===false));
+  assert.strictEqual(protokoll(app).filter(e=>e.typ==='zustand').pop().fpsKamera,null);
+});
+
+await t('Rueckfall, Clip-Stufe, Stopp und Meldungen landen im Protokoll', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+20);
+  app.setFrame([255,255,255]);await app.frames(100);await app.advance(1000);await app.frames(5);
+  await app.ev("revertToAutoExposure('test')");
+  app.ev('stopCamera()');
+  const typen=new Set(protokoll(app).map(e=>e.typ));
+  // 'meldung' fehlt hier bewusst: die Attrappe ersetzt showError (geprueft im Browserlauf).
+  for(const x of ['start','stellbefehl','gemeldet','ergebnis','zustand','clipStufe','rueckfall','stop']) assert.ok(typen.has(x),'fehlt: '+x+' (vorhanden: '+[...typen]+')');
+});
+
+await t('Export: gueltiges JSON mit Version und allen Eintraegen; Ringpuffer begrenzt', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+20);
+  const j=JSON.parse(app.ev('diagExportText()'));
+  assert.ok('version' in j.meta,'Version fehlt in meta'); // Wert: aus <title>, in der Attrappe leer
+  assert.ok(/const diagExportText|function diagExportText/.test(src)&&/document\.title/.test(src.slice(src.indexOf('function diagExportText'),src.indexOf('function exportDiagnostics'))));
+  assert.strictEqual(j.eintraege.length,protokoll(app).length);
+  assert.ok(j.meta.protokollStart);
+  const max=app.ev('DIAG_MAX');
+  for(let i=0;i<max+50;i++) app.ev("diag('test',{i:"+i+"})");
+  assert.strictEqual(protokoll(app).length,max);
+  assert.ok(app.ev('diagDropped')>=50);
+});
+
+await t('Export ohne Daten: Meldung statt leerer Datei', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  app.ev('exportDiagnostics()');
+  assert.ok(app.toasts.some(x=>/Noch keine Diagnose-Daten/.test(x)));
+});
+
+console.log('== v3.4.29: Rec - Momentaufnahmen fuers Protokoll ==');
+const aufnahmen=app=>app.ev('diagLog').filter(e=>e.typ==='aufnahme');
+
+await t('Rec: 3 Aufnahmen im Abstand von 30 s, erste sofort, danach Ende mit Meldung', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');
+  assert.strictEqual(aufnahmen(app).length,1,'erste Aufnahme nicht sofort');
+  assert.ok(/⏹ Rec 1\/3 · nächste in 30 s/.test(app.txt('recBtn')),app.txt('recBtn'));
+  await app.frames(450);                                          // 15 s
+  assert.ok(/1\/3 · nächste in 1[45] s/.test(app.txt('recBtn')),'Zaehler laeuft nicht: '+app.txt('recBtn'));
+  assert.strictEqual(aufnahmen(app).length,1,'zu frueh aufgenommen');
+  await app.frames(450);await app.advance(0);                     // 30 s
+  assert.strictEqual(aufnahmen(app).length,2);
+  await app.frames(910);await app.advance(0);                     // 60 s (+ Rundungsreserve der Test-Uhr)
+  const a=aufnahmen(app);
+  assert.strictEqual(a.length,3);
+  assert.deepStrictEqual(a.map(x=>x.nr),[1,2,3]);
+  assert.ok(a[2].t-a[0].t>=59000&&a[2].t-a[0].t<=61000,'Abstand: '+(a[2].t-a[0].t));
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  assert.ok(app.toasts.some(x=>/Aufnahme fertig \(3\/3\)/.test(x)));
+  assert.ok(/letzte Serie: 3\/3/.test(app.txt('recBtn')),app.txt('recBtn'));
+  await app.frames(900);await app.advance(0);
+  assert.strictEqual(aufnahmen(app).length,3,'nach 3 nicht aufgehoert');
+});
+
+await t('Rec-Aufnahme enthaelt, was auf dem Bildschirm steht, plus App- und Kamerawerte', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');
+  const a=aufnahmen(app)[0];
+  assert.strictEqual(a.anzeige.ppfd,app.txt('ppfdVal'));
+  assert.strictEqual(a.anzeige.hardwareModus,'Manuell');
+  assert.strictEqual(a.anzeige.unsicherheit,app.txt('uncertaintyVal'));
+  assert.ok(a.anzeige.debug.startsWith('min='),'Debug-Zeile fehlt');
+  assert.strictEqual(a.gemeldet.exposureTime,40);
+  assert.ok(a.bild.yGamma>100&&a.bild.roh>0);
+  assert.strictEqual(a.serie,1);assert.strictEqual(a.von,3);
+  assert.ok('kamerabild' in a,'Feld kamerabild fehlt'); // Bild selbst: im Browser geprueft (Attrappe hat keine Canvas)
+  const j=JSON.parse(app.ev('diagExportText()'));
+  assert.strictEqual(j.eintraege.filter(e=>e.typ==='aufnahme').length,1,'Aufnahme fehlt im Export');
+});
+
+await t('Rec bricht ab, wenn die Messung stoppt; erneutes Tippen bricht ebenfalls ab', async()=>{
+  const app=makeApp({cam:MANUELL()});await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');await app.frames(300);
+  app.ev('stopCamera()');
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  await app.advance(60000);
+  assert.strictEqual(aufnahmen(app).length,1,'nach dem Stopp weiter aufgenommen');
+  assert.ok(app.ev('diagLog').some(e=>e.typ==='rec'&&e.aktion==='ende'&&e.grund==='Messung gestoppt'));
+  await app.start();await app.frames(EINSCHWINGEN+30);
+  app.ev('recToggle()');app.ev('recToggle()');
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  assert.ok(app.ev('diagLog').some(e=>e.typ==='rec'&&e.grund==='abgebrochen'));
+  assert.strictEqual(aufnahmen(app).filter(x=>x.serie===2).length,1);
+});
+
+await t('Rec ohne laufende Messung: Hinweis, keine Aufnahme', async()=>{
+  const app=makeApp({cam:MANUELL()});
+  app.ev('recToggle()');
+  assert.strictEqual(app.ev('rec.aktiv'),false);
+  assert.ok(app.toasts.some(x=>/Erst die Kamera starten/.test(x)));
+  assert.strictEqual(aufnahmen(app).length,0);
+});
+
 console.log('\n'+pass+' passed, '+fail+' failed');
 process.exit(fail?1:0);
 })();

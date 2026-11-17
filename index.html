@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PPFD Meter">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>PPFD Meter Pro v3.4.28</title>
+<title>PPFD Meter Pro v3.4.29</title>
 <style>
   :root{--bg:#0d1f10;--surface:#152118;--border:#2a3d2c;--green:#4ade80;--amber:#fbbf24;--red:#f87171;--text:#e8f5ea;--muted:#6b8f6e;--card-bg:#1a2f1e;--blue:#60a5fa;--purple:#c084fc;--mono:ui-monospace,'Roboto Mono','Cascadia Mono',Menlo,Consolas,monospace;--sans:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif}
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -96,7 +96,7 @@
 </head>
 <body>
 <header>
-  <span class="app-title">PPFD Meter Pro v3.4.28</span>
+  <span class="app-title">PPFD Meter Pro v3.4.29</span>
   <div class="status-dot" id="statusDot"></div>
 </header>
 <main>
@@ -176,6 +176,9 @@
   <button class="calib-btn" style="border-color:var(--muted);color:var(--muted)" id="measureBlackLevelBtn" onclick="measureBlackLevel()">⚫ Schwarzwert messen (Linse abdecken)</button>
   <div class="src-note" id="blackLevelNote" style="text-align:center"></div>
   <button class="calib-btn" style="border-color:var(--red);color:var(--red);margin-top:4px;display:none" id="resetBlackLevelBtn" onclick="resetBlackLevel()">Schwarzwert-Referenz löschen</button>
+  <button class="calib-btn" style="border-color:var(--muted);color:var(--muted)" id="recBtn" onclick="recToggle()">⏺ Rec – 3 Aufnahmen, alle 30 s</button>
+  <button class="calib-btn" style="border-color:var(--muted);color:var(--muted)" id="diagExportBtn" onclick="exportDiagnostics()">🩺 Diagnose exportieren</button>
+  <div class="src-note" style="text-align:center">Zeichnet auf, was die Kamera meldet und was die App misst (nur auf dem Gerät) – zum Teilen, wenn Werte unplausibel wirken. „Rec“ ergänzt das Protokoll um Momentaufnahmen aller angezeigten Werte mit einem kleinen Kamerabild.</div>
 
   <div class="params-card" id="trainCard">
     <div class="section-label">Trainingsdaten (Referenzmessung)</div>
@@ -199,7 +202,7 @@
   </div>
 
   <div class="calib-note">
-    v3.4.28 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
+    v3.4.29 · Exakte sRGB-EOTF (IEC 61966-2-1) · PAR-Gewichtung · Adaptiver Kalman · Uniformitäts-CV (3×3) · Qualitätsindex Q · GUM-Unsicherheit (±%, k=2) · Status-Checkliste<br>
     Rolling-Shutter Flicker · Adaptives Subsampling · FSM Hysterese · Persistente Kalibrierung (v2) · WB-Lock · Zielband-Fallback · EV-Anti-Clipping<br>
     Live-Exposure (SW-Modus) · Flicker-Periodizität · Start-Race-Guard · Clipping-Priorität · Kalibrier-Guards · Signal-Flag · Manuelle Lichtprofile · Reine Pipeline-Funktionen<br>
     Manual-Exposure-Gate · Watchdog nach Permission · Tune-Zeitbudget · Schwarzwert-Abbruch-Guards · State-Glow-Fix · Gain-Slider-Sync · Verify ab Live-Wert (Quantisierungs-Fix) · PWM-robuste Bandprüfung · Stream-lokaler Cleanup · PROC-Konstanten · Video-Ready-Abort · Audio-Resume<br>
@@ -228,6 +231,7 @@
     Anzeige startet beim Messwert statt bei 0 · Platzhalter-Wert (Auto-Belichtung ohne Meldung) abgedunkelt, nicht kalibrierbar · Kalibrierung auf den Median der letzten Sekunde, nur bei neutralem Software-Gain<br>
     Altkalibrierung nur noch bei betroffener ISO gemeldet · Null-Zone auch bei schwarzem Frame · Export nennt Rohwert-Basis und ob Belichtung/ISO gemeldet waren<br>
     Kalibrierpunkte einzeln löschbar · Schwarzwert gehört zur Kalibrierung (Hinweis bei Änderung) · Trainingspunkte als Median · Export: ISO gesteuert · Einheit „µmol“ nicht mehr als „ΜMOL“<br>
+    Diagnose-Protokoll: Kamera-Befehle, gemeldete Einstellungen, Bildhelligkeit und echte Kamera-Bildrate zum Exportieren · Rec: 3 Momentaufnahmen mit Kamerabild<br>
     <span id="deviceInfo">Gerät: wird erkannt...</span>
   </div>
 </main>
@@ -1457,7 +1461,183 @@ const ctx=canvas.getContext('2d',{willReadFrequently:true});
 // sich bei wiederholtem Auslöser (z.B. Dauer-Clipping-Hinweis) kein
 // Rückstau identischer Toasts bildet.
 let toastQueue=[],toastActive=false,toastLast=null;
+// ===== v3.4.29: Diagnose-Protokoll (HANDOFF.md Punkt 16) =====
+// Feldfall A20s: im Hellen gestartet, Belichtungs-Rampe bis 253 ms ohne Wirkung
+// aufs Bild, Rueckfall auf Auto, danach ~1 statt ~70 umol. Vermutet ist, dass
+// die Kamera Befehle verzoegert umsetzt und nach dem Rueckfall eine veraltete
+// Belichtungszeit meldet - belegt ist es nicht, weil die App nichts davon
+// aufzeichnete. Das Protokoll haelt fest, was die App anfordert, was die
+// Kamera danach meldet, wie hell das Bild ist und - wo der Browser es kann -
+// wann wirklich neue Kamerabilder ankommen (requestVideoFrameCallback; die
+// "Effektive FPS" sind die Bildschirm-Rate, HANDOFF Punkt 14).
+// Es aendert KEINEN Messwert und bleibt im Speicher der Seite (Ringpuffer,
+// geht beim Neuladen verloren); exportiert wird nur auf Knopfdruck. Keine
+// Bilder, aber Geraetename/User-Agent - fuer die Zuordnung gewollt.
+// Kein Eintrag darf die Messung stoeren: diag() faengt alles ab.
+const DIAG_MAX=6000;
+const diagLog=[];
+let diagT0=null,diagStartIso=null,diagDropped=0,diagTickDue=false;
+let diagCam={verfuegbar:null,fps:null,bilder:0}; // letzte Kamera-Bildrate (s. startDiagFrameCounter)
+function diag(type,data){
+  try{
+    const now=performance.now();
+    if(diagT0===null){diagT0=now;diagStartIso=new Date().toISOString();}
+    diagLog.push(Object.assign({t:Math.round(now-diagT0),typ:type},data||{}));
+    if(diagLog.length>DIAG_MAX){diagLog.shift();diagDropped++;}
+  }catch(e){}
+}
+function diagSettings(track){
+  try{
+    const s=track.getSettings()||{};
+    return{exposureMode:s.exposureMode,exposureTime:s.exposureTime,iso:s.iso,frameRate:s.frameRate,
+      whiteBalanceMode:s.whiteBalanceMode,exposureCompensation:s.exposureCompensation,width:s.width,height:s.height};
+  }catch(e){return{fehler:String(e&&e.message||e)};}
+}
+function diagCaps(track){
+  try{
+    const c=track.getCapabilities?track.getCapabilities()||{}:{};
+    const out={};
+    for(const k of ['exposureMode','exposureTime','iso','frameRate','whiteBalanceMode','colorTemperature','exposureCompensation']) if(c[k]!==undefined) out[k]=c[k];
+    return out;
+  }catch(e){return{fehler:String(e&&e.message||e)};}
+}
+// Jeder Stellbefehl an die Kamera laeuft ueber track.applyConstraints - die
+// Huelle protokolliert Anforderung, Ergebnis und was die Kamera DANACH meldet,
+// an einer Stelle statt an allen Aufrufern.
+function diagInstrumentTrack(track){
+  try{
+    if(!track||track.__diag) return;
+    const orig=track.applyConstraints.bind(track);
+    track.applyConstraints=async function(c){
+      diag('stellbefehl',{anforderung:c});
+      try{
+        const r=await orig(c);
+        diag('gemeldet',{einstellungen:diagSettings(track)});
+        return r;
+      }catch(e){
+        diag('stellfehler',{anforderung:c,fehler:(e&&e.name||'Fehler')+': '+(e&&e.message||e)});
+        throw e;
+      }
+    };
+    track.__diag=true;
+  }catch(e){}
+}
+// Echte Kamerabilder zaehlen (nicht Bildschirm-Ticks). Je Sekunde ein Eintrag.
+function startDiagFrameCounter(stream){
+  diagCam={verfuegbar:false,fps:null,bilder:0};
+  if(!video||typeof video.requestVideoFrameCallback!=='function'){diag('kamerabilder',{verfuegbar:false});return;}
+  diagCam.verfuegbar=true;
+  let n=0,t0=null,lastPresented=null,luecken=0;
+  const cb=(now,meta)=>{
+    if(activeStream!==stream||!isMeasuring&&!isStarting) return;
+    n++;diagCam.bilder++;
+    const pf=meta&&Number.isFinite(meta.presentedFrames)?meta.presentedFrames:null;
+    if(pf!==null&&lastPresented!==null&&pf-lastPresented>1) luecken+=pf-lastPresented-1;
+    if(pf!==null) lastPresented=pf;
+    if(t0===null) t0=now;
+    if(now-t0>=1000){
+      diagCam.fps=n*1000/(now-t0);
+      diag('kamerabilder',{fps:Math.round(diagCam.fps*10)/10,bilder:n,uebersprungen:luecken,
+        mediaTime:meta&&Number.isFinite(meta.mediaTime)?Math.round(meta.mediaTime*1000)/1000:null});
+      n=0;t0=now;luecken=0;
+    }
+    try{video.requestVideoFrameCallback(cb);}catch(e){}
+  };
+  try{video.requestVideoFrameCallback(cb);}catch(e){diag('kamerabilder',{verfuegbar:false,fehler:String(e)});}
+}
+function diagExportText(){
+  const version=(String(document.title||'').match(/v(\d+\.\d+\.\d+)/)||[])[1]||null;
+  const meta={app:'PPFD Meter Pro',version:version,erstellt:new Date().toISOString(),protokollStart:diagStartIso,
+    geraet:(document.getElementById('trainDevice')?.value||'').trim()||null,userAgent:navigator.userAgent,
+    kamera:cameraFacing,eintraege:diagLog.length,verworfen:diagDropped,hinweis:'t = Millisekunden seit Protokollstart'};
+  return '{\n"meta":'+JSON.stringify(meta)+',\n"eintraege":[\n'+diagLog.map(e=>JSON.stringify(e)).join(',\n')+'\n]}\n';
+}
+// ===== v3.4.29: Rec - Momentaufnahmen als Ergaenzung zum Protokoll =====
+// Eine Web-App kann auf Android keinen Screenshot von sich selbst machen. Rec
+// haelt stattdessen fest, was auf dem Bildschirm steht (alle angezeigten Werte),
+// dazu ein kleines Bild dessen, was die Kamera gerade sieht - das zeigt kein
+// Screenshot, und genau das ist im Feldfall A20s die offene Frage (war das Bild
+// wirklich dunkel?). 3 Aufnahmen im Abstand von 30 s, die erste sofort: eine
+// Minute, repraesentativ und klein. Die Aufnahmen landen im Diagnose-Protokoll
+// (Typ 'aufnahme') und werden mit "Diagnose exportieren" ausgegeben.
+// Aendert keinen Messwert. Kamerabild 160x120 JPEG (~5-10 kB je Aufnahme).
+const REC_SHOTS=3,REC_INTERVAL_MS=30000,REC_IMG_W=160,REC_IMG_H=120;
+const rec={aktiv:false,serie:0,n:0,timer:null,naechste:0};
+function recImage(){
+  try{
+    const c=document.createElement('canvas');c.width=REC_IMG_W;c.height=REC_IMG_H;
+    const x=c.getContext('2d');x.drawImage(video,0,0,REC_IMG_W,REC_IMG_H);
+    const url=c.toDataURL('image/jpeg',0.7);
+    return typeof url==='string'&&url.startsWith('data:image/')?url:null;
+  }catch(e){return null;}
+}
+function recSnapshot(){
+  const txt=id=>{try{return (document.getElementById(id).textContent||'').trim();}catch(e){return null;}};
+  let tr=null;try{tr=activeStream?.getVideoTracks()[0]||null;}catch(e){}
+  const f=lastFrameSnapshot||{};
+  return{
+    anzeige:{ppfd:txt('ppfdVal'),abgedunkelt:(()=>{try{return document.getElementById('ppfdVal').style.opacity==='0.4';}catch(e){return null;}})(),
+      abzeichen:txt('zoneBadge'),unsicherheit:txt('uncertaintyVal'),bereich:txt('calibRangeVal'),dli:txt('dliVal'),
+      hardwareModus:txt('hardwareVal'),debug:txt('debugExpVal'),lichtquelle:txt('lightSourceVal'),flicker:txt('flickerVal'),
+      clipping:txt('clippingVal'),signal:txt('signalVal'),homogenitaet:txt('uniformityVal'),messqualitaet:txt('reliabilityVal'),
+      fpsAnzeige:txt('fpsVal'),pixelStep:txt('stepVal')},
+    app:{belichtung_s:hardwareSettings?.exposureTime??null,iso:hardwareSettings?.iso??null,
+      belichtungGemeldet:hardwareSettings?.exposureReported??null,isoGemeldet:hardwareSettings?.isoReported??null},
+    gemeldet:tr?diagSettings(tr):null,
+    bild:{yGamma:Number.isFinite(f.yMean_gamma)?Math.round(f.yMean_gamma*10)/10:null,
+      yLinear:Number.isFinite(f.yMean_lin)?Math.round(f.yMean_lin*10000)/10000:null,
+      roh:Number.isFinite(f.rawPPFDUncalibrated)?Math.round(f.rawPPFDUncalibrated*100)/100:null},
+    fpsKamera:diagCam.fps===null?null:Math.round(diagCam.fps*10)/10,
+    kamerabild:recImage()
+  };
+}
+function recButtonText(){
+  if(rec.aktiv){
+    const rest=Math.max(0,Math.ceil((rec.naechste-performance.now())/1000));
+    return '⏹ Rec '+rec.n+'/'+REC_SHOTS+(rec.n<REC_SHOTS?' · nächste in '+rest+' s':'')+' – tippen zum Abbrechen';
+  }
+  return rec.serie>0?'⏺ Rec – letzte Serie: '+rec.n+'/'+REC_SHOTS+' aufgenommen · neu starten':'⏺ Rec – 3 Aufnahmen, alle 30 s';
+}
+function recUpdateButton(){try{document.getElementById('recBtn').textContent=recButtonText();}catch(e){}}
+function recShot(){
+  rec.timer=null;
+  if(!rec.aktiv) return;
+  if(!isMeasuring){recStop('Messung gestoppt');return;}
+  rec.n++;
+  diag('aufnahme',Object.assign({serie:rec.serie,nr:rec.n,von:REC_SHOTS},recSnapshot()));
+  if(rec.n>=REC_SHOTS){recStop('fertig');return;}
+  rec.naechste=performance.now()+REC_INTERVAL_MS;
+  rec.timer=setTimeout(recShot,REC_INTERVAL_MS);
+  recUpdateButton();
+}
+function recStop(grund){
+  if(rec.timer){clearTimeout(rec.timer);rec.timer=null;}
+  if(!rec.aktiv) return;
+  rec.aktiv=false;
+  diag('rec',{aktion:'ende',serie:rec.serie,grund:grund,aufnahmen:rec.n});
+  recUpdateButton();
+  if(grund==='fertig') showError('Aufnahme fertig ('+rec.n+'/'+REC_SHOTS+') – mit „Diagnose exportieren“ sichern.');
+  else showError('Aufnahme beendet ('+grund+') – '+rec.n+'/'+REC_SHOTS+' Aufnahmen im Protokoll.');
+}
+function recToggle(){
+  if(rec.aktiv){recStop('abgebrochen');return;}
+  if(!isMeasuring){showError('Erst die Kamera starten – Rec nimmt während der Messung auf.');return;}
+  rec.serie++;rec.n=0;rec.aktiv=true;
+  diag('rec',{aktion:'start',serie:rec.serie,anzahl:REC_SHOTS,abstand_s:REC_INTERVAL_MS/1000});
+  recShot();
+}
+function exportDiagnostics(){
+  if(diagLog.length===0){showError('Noch keine Diagnose-Daten – erst die Kamera starten.');return;}
+  const blob=new Blob([diagExportText()],{type:'application/json;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='ppfd_diagnose_'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.json';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
 function showError(msg){
+  diag('meldung',{text:msg}); // v3.4.29
   if(msg===toastLast) return;
   toastLast=msg;
   toastQueue.push(msg);
@@ -1499,7 +1679,9 @@ function sampleFrameY(){
   const d=ctx.getImageData(0,0,PROC_W,PROC_H).data;
   let sum=0,n=0;
   for(let i=0;i<d.length;i+=32){sum+=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];n++;}
-  return sum/n;
+  const y=sum/n;
+  diag('helligkeit',{y:Math.round(y*10)/10}); // v3.4.29: nur Belichtungs-Einstellung (Tuning/Verify)
+  return y;
 }
 // v3.3.15 FIX (Review/Tin): PWM-Robustheit für ENTSCHEIDENDE Einzelmessungen.
 // Unter LED-PWM (100-200 Hz) trifft ein einzelnes Frame zufällig eine dunkle
@@ -2251,10 +2433,15 @@ async function startCamera(){
     setStep('1/4 Kamera anfragen...');
     activeStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:cameraFacing},width:{ideal:PROC_W},height:{ideal:PROC_H}}});
     myStream=activeStream; // v3.3.16: an diesen Versuch binden (s. abortCleanup oben)
+    // v3.4.29: Diagnose - was die Kamera anbietet und meldet, bevor die App etwas stellt.
+    {const tr=activeStream.getVideoTracks()[0];
+     diag('start',{kamera:cameraFacing,geraet:tr&&tr.label,faehigkeiten:tr?diagCaps(tr):null,einstellungen:tr?diagSettings(tr):null});
+     diagInstrumentTrack(tr);}
     const watchdog=new Promise((_,reject)=>{wdTimer=setTimeout(()=>reject(new Error('watchdog-timeout')),15000);});
     await Promise.race([(async()=>{
     if(startAborted){abortCleanup();return;}
     video.srcObject=activeStream;
+    startDiagFrameCounter(activeStream); // v3.4.29
     try{await video.play();}catch(e){console.warn('video.play():',e);}
     setStep('2/4 Video bereit...');
     // v3.3.17 (Review/Tin): AbortController statt {once:true}-Alleinlage -
@@ -2275,6 +2462,10 @@ async function startCamera(){
     clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
     setStep('3/4 Belichtung einstellen...');
     hardwareSettings=await applyHardwareConstraints(activeStream);
+    diag('ergebnis',{modus:hardwareSettings.constraintsApplied?'manuell':'software',rueckfall:hardwareSettings.fallbackMode||null,
+      belichtung_s:hardwareSettings.exposureTime,iso:hardwareSettings.iso,belichtungGemeldet:hardwareSettings.exposureReported,
+      isoGemeldet:hardwareSettings.isoReported,isoGesteuert:hardwareSettings.isoControlled,rampe:hardwareSettings.exposureTuneTrail??null,
+      rampeY:hardwareSettings.exposureTuneY??null,beleg:hardwareSettings.exposureTuneRampVerified??null}); // v3.4.29
     if(startAborted){abortCleanup();return;}
     setStep('4/4 Fertigstellen...');
     const mode=hardwareSettings.constraintsApplied?'Manuell':(hardwareSettings.fallbackMode?'Software':'Auto');
@@ -2328,6 +2519,8 @@ async function startCamera(){
 }
 
 function stopCamera(){
+  if(isMeasuring||activeStream) diag('stop',{}); // v3.4.29
+  if(rec.aktiv) recStop('Messung gestoppt'); // v3.4.29
   isMeasuring=false;
   releaseWakeLock();
   clipCriticalFrames=0;clipEvApplied=false;clipHintShown=false;clipStepInProgress=false;clipSteppedDown=false;lowAfterStepFrames=0;lowAfterStepHintShown=false;
@@ -2507,6 +2700,7 @@ async function stepDownExposureManual(){
 }
 
 async function revertToAutoExposure(reason){
+  diag('rueckfall',{grund:reason||'auto-revert'}); // v3.4.29
   try{
     const track=activeStream?.getVideoTracks()[0];
     if(track) await track.applyConstraints({advanced:[{exposureMode:'continuous',whiteBalanceMode:'continuous'}]});
@@ -2568,6 +2762,7 @@ function processLoop(timestamp){
   else if(smoothedFps>FPS_THRESHOLD_HIGH){lowFpsFrameCount=Math.max(lowFpsFrameCount-1,0);}
   flickerReliable=lowFpsFrameCount<FPS_CONFIRM_FRAMES;
 
+  if(rec.aktiv&&frameCount%10===0) recUpdateButton(); // v3.4.29: Rec-Zaehler
   if(frameCount%30===0){
     document.getElementById('fpsVal').textContent=smoothedFps.toFixed(1)+' fps';
     document.getElementById('stepVal').textContent=pixelStep+'×';
@@ -2739,6 +2934,7 @@ function processLoop(timestamp){
         }).then(res=>{
           if(activeStream!==stream) return; // Flag gehoert inzwischen einer neuen Sitzung
           clipStepInProgress=false;
+          diag('clipStufe',res); // v3.4.29
           if(res.ok){
             const ms=(u)=>{const v=u*EXP_UNIT*1000;return v<1?v.toFixed(2):v<10?v.toFixed(1):String(Math.round(v));};
             showError('Dauerhaft übersteuert – Belichtung eine Stufe kürzer ('+ms(res.from)+' → '+ms(res.to)+' ms), Manuell-Modus bleibt.');
@@ -2807,6 +3003,7 @@ function processLoop(timestamp){
     flickerResultFresh=true;
     lastAiUpdate=timestamp;
     profileSwitchPending=false; // Faktor des gewaehlten Profils ist ab diesem Frame wirksam
+    diagTickDue=true; // v3.4.29: einmal je Sekunde ein Zustandseintrag (am Ende des Durchlaufs)
   }
 
   const effectiveISO=hardwareSettings?.iso||ISO;
@@ -3027,6 +3224,23 @@ function processLoop(timestamp){
     badgeEl.style.color='var(--amber)';badgeEl.style.borderColor='var(--amber)';
   }
 
+  // v3.4.29: Zustand einmal je Sekunde. 'gemeldet' ist das LIVE von der Kamera
+  // Gemeldete, 'app' das, womit die Formel rechnet - im Feldfall A20s genau die
+  // Stelle, an der beides auseinanderlaufen koennte.
+  if(diagTickDue){
+    diagTickDue=false;
+    let tr=null;try{tr=activeStream?.getVideoTracks()[0]||null;}catch(e){}
+    diag('zustand',{
+      modus:hardwareSettings?.constraintsApplied?'manuell':'software',
+      app:{belichtung_s:hardwareSettings?.exposureTime??null,iso:hardwareSettings?.iso??null,
+        belichtungGemeldet:hardwareSettings?.exposureReported??null,isoGemeldet:hardwareSettings?.isoReported??null},
+      gemeldet:tr?diagSettings(tr):null,
+      bild:{yGamma:Math.round(yMean_gamma*10)/10,yLinear:Math.round(yMean_lin*10000)/10000,
+        clipping:clipStatus.level,signal:signalStatus.level,cv:frame.uniformity.cv===null?null:Math.round(frame.uniformity.cv*1000)/1000},
+      roh:Math.round(currentRawPPFDUncalibrated*100)/100,anzeige:document.getElementById('ppfdVal').textContent,
+      q:lastQuality?Math.round(lastQuality.q*100)/100:null,gehalten:held?held.kind:null,platzhalter:!!expStat.placeholder,
+      fpsBildschirm:Math.round(smoothedFps*10)/10,fpsKamera:diagCam.fps===null?null:Math.round(diagCam.fps*10)/10});
+  }
   animationFrameId=requestAnimationFrame(processLoop);
 }
 

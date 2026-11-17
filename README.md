@@ -166,6 +166,20 @@ Die Belichtungsgleichung braucht Belichtungszeit und ISO. Im **Manuell-Modus** s
 
 **Erkennen:** *Hardware-Modus: Software (…)* zusammen mit dem Abzeichen „Nur Platzhalter – keine Messung“. Im CSV-Export stehen `belichtungGemeldet` und `isoGemeldet` (1/0).
 
+## Diagnose-Protokoll
+
+Wirken die Werte unplausibel – zum Beispiel sehr niedrig direkt unter der Lampe, oder deutlich anders nach einem Neustart –, hilft **„🩺 Diagnose exportieren“** (unter den Schwarzwert-Knöpfen). Seit v3.4.29 zeichnet die App während der Messung auf:
+
+- jeden Stellbefehl an die Kamera (Belichtung, ISO, Modus) und was die Kamera **danach meldet**,
+- die Bildhelligkeit während der Belichtungs-Einstellung beim Start und deren Ergebnis (Manuell/Software, Rückfallgrund),
+- einmal pro Sekunde den Zustand: womit die App rechnet, was die Kamera live meldet, Bildhelligkeit, Rohwert, Anzeige, Messgüte,
+- die **echte Kamera-Bildrate** (wo der Browser `requestVideoFrameCallback` kann) – die Zeile „Effektive FPS“ ist die Bildschirm-Rate,
+- Rückfälle auf Auto-Belichtung, Belichtungs-Stufen bei Übersteuerung und eingeblendete Meldungen.
+
+**„⏺ Rec“** ergänzt das Protokoll um **3 Momentaufnahmen im Abstand von 30 Sekunden** (die erste sofort): alle angezeigten Werte – Zahl, Abzeichen, Unsicherheitszeile, Hardware-Modus, Debug-Zeile, Signal, Messqualität … – plus ein kleines Bild dessen, was die Kamera gerade sieht (160 × 120). Ein echter Screenshot ist einer Web-App auf Android nicht möglich; das Kamerabild zeigt dafür etwas, das ein Screenshot nicht zeigen kann: ob das Bild wirklich so hell oder dunkel war, wie die Werte nahelegen. Der Knopf zählt mit („2/3 · nächste in 23 s“); erneutes Tippen oder Stoppen der Messung bricht ab. Danach mit „Diagnose exportieren“ sichern.
+
+Das Protokoll bleibt auf dem Gerät, bis man exportiert, und geht beim Neuladen der Seite verloren; es enthält Gerätenamen und Browserkennung und – nur mit Rec – die kleinen Kamerabilder. Es ändert keinen Messwert. Anlass war der Feldfall in `HANDOFF.md`, Punkt 13: Mit dem Protokoll lässt sich belegen, ob eine Kamera Belichtungsbefehle verzögert umsetzt oder nach einem Rückfall eine veraltete Belichtungszeit meldet.
+
 ## Trainingsdaten auswerten
 
 Die App kann Messpunkte mit Referenzwert sammeln (*Trainingsdaten* → Punkt speichern → *CSV exportieren*). `tools/auswertung.js` beantwortet damit zwei Fragen — ohne Abhängigkeiten, nur Node:
@@ -196,7 +210,7 @@ Punkte ohne `sessionId` (vor v3.4.8 erfasst) zählen bei der Unsicherheit mit, i
 | `index.html` | **Die komplette App** — bewusst single-file, kein Build-Step |
 | `manifest.json`, `sw.js`, `icon-*.png`, `apple-touch-icon.png` | PWA-Infrastruktur |
 | `tests/test_pipeline.js` | Node-Regressions-Harness, **191 Tests** gegen den extrahierten Pure-Pipeline-Block |
-| `tests/test_messablauf.js` | Ablauf-Harness, **30 Tests**: das echte Skript gegen simulierte Kamera, Frames und virtuelle Uhr — Kamerastart, Belichtungs-Tuning, Einschwingen, Messschleife, Kalibrierung und Trainingspunkt als ganzer Ablauf |
+| `tests/test_messablauf.js` | Ablauf-Harness, **42 Tests**: das echte Skript gegen simulierte Kamera, Frames und virtuelle Uhr — Kamerastart, Belichtungs-Tuning, Einschwingen, Messschleife, Kalibrierung und Trainingspunkt als ganzer Ablauf |
 | `tests/test_calib_storage.js` | Integrations-Harness, **49 Tests** für Kalibrier-Storage, Canvas-/Flicker-/Gate-Verdrahtung, Zustands-Reset, Schleifen-Robustheit und die Sperre von Kalibrierung und Trainingspunkten während des Einschwingens |
 | `tests/test_exposure_budget.js` | **28 Tests** für das Zeitbudget von `tuneExposure`, die Belichtungs-Stufe bei Übersteuerung und den Neustart-Hinweis danach (simulierte Uhr) |
 | `tests/test_sw_fallback.js` | **12 Tests** für den Service-Worker (Offline-Fallback, Cache-Regeln, Aufräumen nur eigener Caches) |
@@ -216,7 +230,7 @@ node tests/test_calib_storage.js    # 49/49 erwartet
 node tests/test_exposure_budget.js  # 28/28 erwartet
 node tests/test_sw_fallback.js      # 12/12 erwartet
 node tests/test_auswertung.js       # 22/22 erwartet
-node tests/test_messablauf.js       # 30/30 erwartet
+node tests/test_messablauf.js       # 42/42 erwartet
 
 npm install                         # einmalig, nur für die Property-Tests
 node tests/test_properties.js       # 34/34 erwartet

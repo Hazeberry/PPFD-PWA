@@ -20,6 +20,11 @@ Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum – und sei
 | 10 | Bekannte Grenzen 2–5 im README | Produktentscheidungen | Grenze 2 **erledigt** (v3.4.28); 3–5 offen |
 | 11 | Auswertung: Zuordnung alter Punkte | Datenqualität | abgeschlossen – mehr ist aus alten Daten nicht zu holen |
 | 12 | Browser-Test liegt nicht im Repo | Werkzeug | **erledigt** (PR #27/#28) |
+| 13 | Gemeldete Belichtungszeit wird nicht geprüft (Feldfall A20s) | Messfehler (groß, gerätabhängig) | **offen** – erst Diagnose-Protokoll (16), dann Korrektur |
+| 14 | „Effektive FPS“ misst den Bildschirm, nicht die Kamera | Messkette | **offen** – Umsetzung |
+| 15 | Belichtungs-Tuning wartet feste Zeiten statt auf ein neues Bild | Start-Robustheit | **offen** – Umsetzung, Gerät zur Bestätigung |
+| 16 | Diagnose-Protokoll für Kamera-Verhalten | Werkzeug | **erledigt** (v3.4.29) – jetzt auf A20s/A17 aufzeichnen |
+| 17 | Wert bei „Signal: Zu dunkel“ sieht aus wie eine Messung | Anzeige | **offen** – Umsetzung |
 
 Nebenbei in v3.4.28 behoben: Die Feldbeschriftungen setzten „µmol“ per CSS in Großbuchstaben, daraus wurde „ΜMOL“ – gelesen als mmol, Faktor 1000 beim Eintippen der Referenz.
 
@@ -157,6 +162,86 @@ Weiterhin offen, jeweils mit Analyse im README unter „Bekannte Grenzen“:
 
 **Vorschlag:** Als `tests/test_browser.js` aufnehmen, optional wie `test_properties.js` (eigene Abhängigkeit `playwright`, nicht in `test:nodeps`). Den Platzhalter-Fall erzeugt man im Browser, indem man per `addInitScript` `MediaStreamTrack.prototype.getCapabilities/getSettings` um `exposureMode`, `exposureTime`, `iso` kürzt.
 
+## 13. Gemeldete Belichtungszeit wird nicht geprüft (Feldfall Samsung A20s)
+
+**Feldbeobachtung (15.11.2026, v3.4.28, A20s, weiße LED, Handy direkt unter der Lampe):**
+
+| Zeit | Hardware-Modus | Debug-Zeile | Anzeige |
+|---|---|---|---|
+| 14:31 / 14:32 | Software (exposure-out-of-range) | `tune=40→160→640→2533.57 Y=18.5 →FALLBACK` | **1,1 / 1,0 µmol**, „Sehr niedrig“, kein Hinweis |
+| 14:35 (nach Neustart) | Manuell | `tune=40→160 Y=145.7 … clip↓ 16→4.0ms` | **73 µmol**, Signal OK |
+
+Laut Nutzer lag das Handy in beiden Fällen an derselben Stelle. Nach mehrmaligem Aus- und Einschalten ging die App in den Manuell-Modus, danach waren die Werte plausibel. Zum Vergleich: Das A17 zeigte an derselben Lampe ~300, das A20s im Manuell-Modus ~150 – ein Faktor 2 zwischen zwei unkalibrierten Geräten ist normal (Skalenfaktor, den die Kalibrierung pro Kamera auffängt). Faktor ~70 zwischen zwei Starts desselben Geräts ist es nicht.
+
+**Zwei Auffälligkeiten:**
+1. **Der Start ist im Hellen an der Belichtung gescheitert.** Die Rampe fuhr 4 → 16 → 64 → 253 ms und das Bild blieb dunkel (Y = 18,5), obwohl unter derselben Lampe beim nächsten Start 16 ms für Y ≈ 146 reichten und auf 4 ms gekürzt werden musste. Die Belichtung kam während dieses Starts nicht im Bild an – entweder hat die Kamera die Befehle (noch) nicht umgesetzt, oder die App hat alte bzw. schwarze Bilder ausgewertet (siehe Punkt 15).
+2. **Im Software-Modus rechnete die App vermutlich mit einer veralteten Belichtungszeit.** Die Unsicherheitszeile zeigte kein „nicht gemeldet“, die Kamera meldete also eine Belichtungszeit. Meldet sie nach dem Rückfall auf Auto weiter die zuletzt manuell gesetzten 253 ms, während die Automatik real nur wenige Millisekunden belichtet, teilt die Formel durch einen ~60-fach zu großen Wert. Die Zahlen passen: 253 ms ÷ 4 ms ≈ 63, 73 µmol ÷ 63 ≈ 1,2 µmol (angezeigt 1,0–1,1).
+
+**Stand der Beweislage:** Indiz, kein Beweis. Die App zeichnet die gemeldeten Werte nicht auf.
+
+**Nachgestellt in der Simulation** (Harness aus `tests/test_messablauf.js`): Eine Kamera, deren Belichtungsbefehle beim Start keine Wirkung aufs Bild haben und die nach dem Rückfall auf `continuous` den letzten manuellen Wert weiter meldet, ergibt exakt das Feldbild – `Software (exposure-out-of-range)`, `tune=40→160→640→2533.57 Y=18.0 →FALLBACK`, Anzeige **1,1 µmol**, „Sehr niedrig“, kein Hinweis. Die App rechnet mit `t = 0,253 s`; mit den realen 4 ms wären es 67 µmol (Faktor 63). Das beweist nicht, dass das A20s sich so verhält (die Kamera ist nach der Vermutung gebaut), zeigt aber: **Verhält sich eine Kamera so, hat die App keinen Schutz dagegen.**
+
+**Wo:** `readLiveExposure` übernimmt jede gemeldete Belichtungszeit zwischen 1 µs und 2 s (`sec>1e-6&&sec<2`), ohne Abgleich mit Bildhelligkeit oder Kamera-Bildrate. Im Software-Modus wird alle `SW_POLL_INTERVAL` (10) Frames gelesen.
+
+**Korrektur (nach Punkt 16):**
+- Plausibilitätsprüfung: Eine gemeldete Belichtungszeit, die länger ist als der Abstand zwischen zwei echten Kamerabildern (Punkt 14), ist unmöglich → als „nicht gemeldet“ behandeln → Platzhalter statt falscher Zahl.
+- Konsistenzprüfung im Software-Modus: Ändert sich die Bildhelligkeit stark, ohne dass sich die gemeldete Belichtung/ISO ändert, obwohl die Automatik nachregeln müsste, ist die Meldung verdächtig.
+- Debug-Zeile im Software-Modus: live gemeldete Belichtungszeit und ISO anzeigen, damit so ein Fall sofort sichtbar ist.
+- Regressionstest in `tests/test_messablauf.js` mit genau der oben beschriebenen Kamera.
+
+## 14. „Effektive FPS“ misst den Bildschirm, nicht die Kamera
+
+**Erster Beleg (v3.4.29, Diagnose-Protokoll in headless Chromium mit Test-Kamera):** Kamera 20 Bilder/s (`kamerabilder.fps`), Bildschirm-Schleife 60/s (`zustand.fpsBildschirm`). Jedes Kamerabild wird dort also dreimal ausgewertet. Auf echten Handys noch nicht gemessen – das Protokoll zeichnet es jetzt auf.
+
+**Wo:** `processLoop` läuft über `requestAnimationFrame`; `smoothedFps` ist die Bildschirm-Rate. Ob seit dem letzten Durchlauf ein **neues Kamerabild** angekommen ist, prüft die App nirgends.
+
+**Folgen:**
+- Die Kamera-Bildrate ist unbekannt, die Plausibilitätsprüfung aus Punkt 13 hat keine Grundlage. (Auch die Aussage „253 ms sind bei 50 fps unmöglich“ aus der Diskussion des Feldfalls trägt deshalb nicht – die 50 fps waren Bildschirm-Ticks.)
+- Liefert die Kamera langsamer als der Bildschirm, wird dasselbe Bild mehrfach ausgewertet. Das Einschwingen (`SettleTimer`, 300 „Frames“) zählt Bildschirm-Ticks, und die Glättungsfenster enthalten Duplikate: Median-Vorfilter (5), `TemporalStats` (30), das Kalibrier-Fenster (31, v3.4.27). Bei 60-Hz-Bildschirm und 30-fps-Kamera ist jedes Fenster effektiv halb so lang wie angenommen; `temporalCV` wird durch Duplikate zu klein.
+- Der Flicker-Detektor rechnet mit `hardwareSettings.frameRate` (gemeldet), nicht gemessen.
+
+**Korrektur:** `video.requestVideoFrameCallback` (Chrome/Android, Safari ab 15.4) liefert je neuem Kamerabild `presentedFrames` und `mediaTime`. Damit: echte Kamera-Bildrate messen, Duplikate überspringen (nur neue Bilder in Fenster und Zähler), Rückfall auf das heutige Verhalten, wo die Schnittstelle fehlt. `test_messablauf.js` braucht dafür eine Attrappe von `requestVideoFrameCallback`; der Browser-Test in CI prüft es echt.
+
+## 15. Belichtungs-Tuning wartet feste Zeiten statt auf ein neues Bild
+
+**Wo:** `tuneExposure`: nach jedem `applyConstraints` 500 ms warten, dann bis zu 5 × 200 ms, solange sich `sampleFrameY()` um weniger als 2 ändert. `sampleFrameY()` zeichnet das aktuelle Video-Element – ob das Bild schon mit der neuen Belichtung entstanden ist, weiß die App nicht.
+
+**Folge:** Auf einem Gerät, das Belichtungsbefehle verzögert umsetzt oder beim Start Bilder verzögert liefert, wertet die Rampe alte (dunkle) Bilder aus und regelt weiter hoch – bis zum Maximum und in den Rückfall `exposure-out-of-range`. Das würde den gescheiterten Start aus Punkt 13 erklären, ist aber nicht belegt.
+
+**Korrektur:** Nach jedem Stellbefehl auf ein **neues Kamerabild** warten (Punkt 14), idealerweise auf eines, dessen gemeldete Belichtung zur Anforderung passt; erst dann bewerten. Zeitbudget (`VERIFY_COST_MS`, 8 s, 15-s-Watchdog) und `tests/test_exposure_budget.js` mitziehen.
+
+## 16. Diagnose-Protokoll für Kamera-Verhalten – erledigt (v3.4.29)
+
+**Umgesetzt:** Knopf „🩺 Diagnose exportieren“ (JSON-Datei). `diag()` schreibt in einen Ringpuffer (6000 Einträge, nur im Speicher). Kamera-Befehle werden zentral über eine Hülle um `track.applyConstraints` erfasst (`diagInstrumentTrack`), echte Kamerabilder über `requestVideoFrameCallback` (`startDiagFrameCounter`), der Zustand einmal je Sekunde am Ende von `processLoop`. Eintragstypen: `start`, `stellbefehl`, `gemeldet`, `stellfehler`, `helligkeit`, `ergebnis`, `zustand`, `kamerabilder`, `clipStufe`, `rueckfall`, `stop`, `meldung`, `rec`, `aufnahme`. **Rec** (`recToggle`): 3 Momentaufnahmen im Abstand von 30 s (`REC_SHOTS`, `REC_INTERVAL_MS`) mit allen angezeigten Werten und einem Kamerabild 160 × 120 als JPEG-Data-URL (~2–10 kB), Zähler im Knopf. Tests in `tests/test_messablauf.js` – darunter die für das A20s vermutete Kamera: Das Protokoll zeigt dort die Rampe bis 253 ms bei dunklem Bild, den Rückfall und im Zustand den Widerspruch „Kamera meldet 253 ms, Bild hell, App rechnet mit 0,253 s“.
+
+**Nächster Schritt (Gerät):** Auf dem A20s und dem A17 je eine Sitzung aufzeichnen (mit Rec) und exportieren – am besten eine, in der der Fehler auftritt (Start unter der Lampe endet in `exposure-out-of-range`), und eine normale. Darauf achten: Folgt `gemeldet.exposureTime` im Software-Modus der Helligkeit oder bleibt es stehen? Passt sie zu `fpsKamera`? Was zeigt `helligkeit` während der Rampe?
+
+**Ursprünglicher Plan:**
+
+**Zweck:** Aus den Indizien in 13–15 Belege machen, auf dem A20s und dem A17 im Vergleich, bevor Korrekturen das Verhalten ändern.
+
+**Aufzeichnen (mit Zeitstempel, nur lokal, Ringpuffer):**
+- jeder `applyConstraints`-Aufruf (Anforderung, Erfolg/Fehler),
+- danach `getSettings()`: `exposureMode`, `exposureTime`, `iso`, `frameRate`,
+- die Bildhelligkeit, die die App zu diesem Zeitpunkt misst (Y gamma/linear),
+- echte Kamera-Bilder per `requestVideoFrameCallback` (Anzahl, Abstand, `mediaTime`), sofern verfügbar,
+- im Software-Modus jede Abfrage aus `readLiveExposure`,
+- Moduswechsel und Rückfälle mit Grund.
+
+**Export:** als Text/JSON-Datei („Diagnose exportieren“), zum Teilen. Ändert keine Messwerte.
+
+**Was es entscheidet:** Ignoriert die Kamera die Befehle beim Start oder waren es alte Bilder? Meldet sie im Auto-Modus die alten 253 ms weiter? Passt die gemeldete Belichtung zur echten Bildrate?
+
+## 17. Wert bei „Signal: Zu dunkel“ sieht aus wie eine Messung
+
+**Feldbeobachtung (A17, 15.11.2026):** Nach einer Clip-Stufe (`clip↓ 16→4.0ms`) und einer dunkleren Stelle zeigte die App **0,5 µmol**, Abzeichen „Sehr niedrig“, DLI 0,0 – nicht abgedunkelt. Gleichzeitig: Signal „Zu dunkel“, Q 0 %. Der Hinweis „Signal schwach … Kamera neu starten“ kam nur als kurz eingeblendete Meldung.
+
+**Problem:** Unterhalb von `SIGNAL_CRIT_LIN` besteht der Wert fast nur aus Rauschen und Rundung. Bewusst wird dort nicht gehalten (v3.4.7: „Licht aus“ muss gegen 0 laufen) – aber die Anzeige gibt keinen Hinweis, dass die Zahl keine Messung ist.
+
+**Korrektur:**
+- Bei Signal „Zu dunkel“ die Zahl abdunkeln und im Abzeichen „Signal zu schwach“ zeigen, kein DLI – die Zahl läuft weiter mit (kein Halt).
+- Wenn die Ursache eine frühere Clip-Stufe ist: statt „Kamera neu starten“ einen Knopf „Belichtung neu einstellen“ anbieten (bewusst kein automatisches Hochregeln, s. v3.4.16 – Pendelgefahr).
+
 ---
 
 ## Arbeitshinweise
@@ -165,5 +250,5 @@ Weiterhin offen, jeweils mit Analyse im README unter „Bekannte Grenzen“:
 - **Reine Funktionen** gehören zwischen `/* ===PURE-PIPELINE-BEGIN=== */` und `…-END`, sonst sieht `test_pipeline.js` sie nicht. Neue Funktionen dort in die Export-Liste oben im Test eintragen.
 - **Ablauf prüfen** statt nur Funktionen: `tests/test_messablauf.js` fährt das echte Skript mit simulierter Kamera, Frames und Uhr. Neue Fehler im Zusammenspiel dort als Regressionstest anlegen; gegen den Stand vor dem Fix laufen lassen (`node tests/test_messablauf.js pfad/zu/alter/index.html`), um zu sehen, dass der Test den Fehler wirklich fängt.
 - **Rohwert-Basis:** Alles, was `rawPPFDUncalibrated` verändert (Konstanten, ISO-/Belichtungsfaktoren, Schwarzwert, PAR-Gewichte), entwertet gespeicherte Kalibrierungen und mischt Trainingsdaten. Dann das Modell-Kennzeichen (`ISO_MODEL`, CSV `isoModell`) hochzählen und `tools/auswertung.js` nachziehen.
-- **Tests:** `npm install` einmalig, dann `npm test` (8 Suites, 369 Tests in v3.4.28). Ohne Abhängigkeiten: `npm run test:nodeps`. Browser: `npx playwright install --with-deps chromium`, dann `npm run test:browser` (lokal mit vorhandenem Chromium: `CHROMIUM_EXECUTABLE_PATH=…`). Beides läuft in der CI (`CI.md`).
+- **Tests:** `npm install` einmalig, dann `npm test` (8 Suites, 381 Tests in v3.4.29). Ohne Abhängigkeiten: `npm run test:nodeps`. Browser: `npx playwright install --with-deps chromium`, dann `npm run test:browser` (lokal mit vorhandenem Chromium: `CHROMIUM_EXECUTABLE_PATH=…`). Beides läuft in der CI (`CI.md`).
 - **Test-Attrappe `test_messablauf.js`:** `requestAnimationFrame` ist seit v3.4.28 eine Warteschlange wie im Browser (vorher verdrängte jeder weitere rAF-Aufruf – etwa die Balken-Animation der Schwarzwertmessung – die Messschleife), Elemente haben eine Kindliste (`kinder`).
