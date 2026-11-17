@@ -23,7 +23,7 @@ Diese Datei sammelt, was **bewusst nicht** erledigt wurde, und warum – und sei
 | 13 | Gemeldete Belichtungszeit wird nicht geprüft (Feldfall A20s) | Messfehler (groß, gerätabhängig) | **offen** – erst Diagnose-Protokoll (16), dann Korrektur |
 | 14 | „Effektive FPS“ misst den Bildschirm, nicht die Kamera | Messkette | **offen** – Umsetzung |
 | 15 | Belichtungs-Tuning wartet feste Zeiten statt auf ein neues Bild | Start-Robustheit | **offen** – Umsetzung, Gerät zur Bestätigung |
-| 16 | Diagnose-Protokoll für Kamera-Verhalten | Werkzeug | **offen** – als Erstes umsetzen |
+| 16 | Diagnose-Protokoll für Kamera-Verhalten | Werkzeug | **erledigt** (v3.4.29) – jetzt auf A20s/A17 aufzeichnen |
 | 17 | Wert bei „Signal: Zu dunkel“ sieht aus wie eine Messung | Anzeige | **offen** – Umsetzung |
 
 Nebenbei in v3.4.28 behoben: Die Feldbeschriftungen setzten „µmol“ per CSS in Großbuchstaben, daraus wurde „ΜMOL“ – gelesen als mmol, Faktor 1000 beim Eintippen der Referenz.
@@ -191,6 +191,8 @@ Laut Nutzer lag das Handy in beiden Fällen an derselben Stelle. Nach mehrmalige
 
 ## 14. „Effektive FPS“ misst den Bildschirm, nicht die Kamera
 
+**Erster Beleg (v3.4.29, Diagnose-Protokoll in headless Chromium mit Test-Kamera):** Kamera 20 Bilder/s (`kamerabilder.fps`), Bildschirm-Schleife 60/s (`zustand.fpsBildschirm`). Jedes Kamerabild wird dort also dreimal ausgewertet. Auf echten Handys noch nicht gemessen – das Protokoll zeichnet es jetzt auf.
+
 **Wo:** `processLoop` läuft über `requestAnimationFrame`; `smoothedFps` ist die Bildschirm-Rate. Ob seit dem letzten Durchlauf ein **neues Kamerabild** angekommen ist, prüft die App nirgends.
 
 **Folgen:**
@@ -208,7 +210,13 @@ Laut Nutzer lag das Handy in beiden Fällen an derselben Stelle. Nach mehrmalige
 
 **Korrektur:** Nach jedem Stellbefehl auf ein **neues Kamerabild** warten (Punkt 14), idealerweise auf eines, dessen gemeldete Belichtung zur Anforderung passt; erst dann bewerten. Zeitbudget (`VERIFY_COST_MS`, 8 s, 15-s-Watchdog) und `tests/test_exposure_budget.js` mitziehen.
 
-## 16. Diagnose-Protokoll für Kamera-Verhalten – als Erstes
+## 16. Diagnose-Protokoll für Kamera-Verhalten – erledigt (v3.4.29)
+
+**Umgesetzt:** Knopf „🩺 Diagnose exportieren“ (JSON-Datei). `diag()` schreibt in einen Ringpuffer (6000 Einträge, nur im Speicher). Kamera-Befehle werden zentral über eine Hülle um `track.applyConstraints` erfasst (`diagInstrumentTrack`), echte Kamerabilder über `requestVideoFrameCallback` (`startDiagFrameCounter`), der Zustand einmal je Sekunde am Ende von `processLoop`. Eintragstypen: `start`, `stellbefehl`, `gemeldet`, `stellfehler`, `helligkeit`, `ergebnis`, `zustand`, `kamerabilder`, `clipStufe`, `rueckfall`, `stop`, `meldung`. Tests in `tests/test_messablauf.js` – darunter die für das A20s vermutete Kamera: Das Protokoll zeigt dort die Rampe bis 253 ms bei dunklem Bild, den Rückfall und im Zustand den Widerspruch „Kamera meldet 253 ms, Bild hell, App rechnet mit 0,253 s“.
+
+**Nächster Schritt (Gerät):** Auf dem A20s und dem A17 je eine Sitzung aufzeichnen und exportieren – am besten eine, in der der Fehler auftritt (Start unter der Lampe endet in `exposure-out-of-range`), und eine normale. Darauf achten: Folgt `gemeldet.exposureTime` im Software-Modus der Helligkeit oder bleibt es stehen? Passt sie zu `fpsKamera`? Was zeigt `helligkeit` während der Rampe?
+
+**Ursprünglicher Plan:**
 
 **Zweck:** Aus den Indizien in 13–15 Belege machen, auf dem A20s und dem A17 im Vergleich, bevor Korrekturen das Verhalten ändern.
 
@@ -242,5 +250,5 @@ Laut Nutzer lag das Handy in beiden Fällen an derselben Stelle. Nach mehrmalige
 - **Reine Funktionen** gehören zwischen `/* ===PURE-PIPELINE-BEGIN=== */` und `…-END`, sonst sieht `test_pipeline.js` sie nicht. Neue Funktionen dort in die Export-Liste oben im Test eintragen.
 - **Ablauf prüfen** statt nur Funktionen: `tests/test_messablauf.js` fährt das echte Skript mit simulierter Kamera, Frames und Uhr. Neue Fehler im Zusammenspiel dort als Regressionstest anlegen; gegen den Stand vor dem Fix laufen lassen (`node tests/test_messablauf.js pfad/zu/alter/index.html`), um zu sehen, dass der Test den Fehler wirklich fängt.
 - **Rohwert-Basis:** Alles, was `rawPPFDUncalibrated` verändert (Konstanten, ISO-/Belichtungsfaktoren, Schwarzwert, PAR-Gewichte), entwertet gespeicherte Kalibrierungen und mischt Trainingsdaten. Dann das Modell-Kennzeichen (`ISO_MODEL`, CSV `isoModell`) hochzählen und `tools/auswertung.js` nachziehen.
-- **Tests:** `npm install` einmalig, dann `npm test` (8 Suites, 369 Tests in v3.4.28). Ohne Abhängigkeiten: `npm run test:nodeps`. Browser: `npx playwright install --with-deps chromium`, dann `npm run test:browser` (lokal mit vorhandenem Chromium: `CHROMIUM_EXECUTABLE_PATH=…`). Beides läuft in der CI (`CI.md`).
+- **Tests:** `npm install` einmalig, dann `npm test` (8 Suites, 377 Tests in v3.4.29). Ohne Abhängigkeiten: `npm run test:nodeps`. Browser: `npx playwright install --with-deps chromium`, dann `npm run test:browser` (lokal mit vorhandenem Chromium: `CHROMIUM_EXECUTABLE_PATH=…`). Beides läuft in der CI (`CI.md`).
 - **Test-Attrappe `test_messablauf.js`:** `requestAnimationFrame` ist seit v3.4.28 eine Warteschlange wie im Browser (vorher verdrängte jeder weitere rAF-Aufruf – etwa die Balken-Animation der Schwarzwertmessung – die Messschleife), Elemente haben eine Kindliste (`kinder`).
